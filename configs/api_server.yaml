@@ -1,0 +1,11 @@
+# Evaluate a model served by `vllm serve` (or SGLang / TGI / Ollama) through the OpenAI API.
+#   vllm serve Qwen/Qwen2.5-VL-7B-Instruct --max-model-len 8192 --limit-mm-per-prompt '{"image": 8}'
+model:
+  backend: openai
+  name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
+  api_base: http://localhost:8000/v1
+  api_key_env: OPENAI_API_KEY        # any value works for a local server
+  concurrency: 16
+run:
+  tasks: [quick]
+  limit: 50

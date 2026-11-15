@@ -1,0 +1,189 @@
+# Text benchmarks for Tamil and other Indic languages.
+#
+# Template variables available in `dataset`/`fields`/`name`: {lang} {iso} {name} {native}
+# {flores} {xlsum} {name_lower}. Prompt templates additionally see the mapped doc fields,
+# {context_block} {choices_block} and localized labels {L_question} {L_passage} ...
+#
+# `status` documents how the schema was checked; run `indibench check <task>` on your
+# machine to validate access + schema in seconds before a long run.
+
+tasks:
+  # ------------------------------------------------------------------ reading comprehension
+  - name: belebele_{lang}
+    type: mcq
+    description: Belebele — FLORES passages with 4-way MCQ reading comprehension (122 langs).
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur, ne, en]
+    tags: [indic, reading_comprehension, text]
+    status: well-known schema
+    dataset: {path: facebook/belebele, name: "{flores}", split: test}
+    fields:
+      context: flores_passage
+      question: question
+      choices: [mc_answer1, mc_answer2, mc_answer3, mc_answer4]
+      answer: correct_answer_num
+      answer_format: index1
+
+  # ------------------------------------------------------------------ knowledge
+  - name: milu_{lang}
+    type: mcq
+    description: MILU (AI4Bharat) — India-centric multi-task knowledge MCQ across 8 domains / 41 subjects.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, en]
+    tags: [indic, knowledge, culture, text]
+    status: schema verified (gated — accept terms on HF + set HF_TOKEN)
+    dataset: {path: ai4bharat/MILU, data_dir: "{Name}", split: test}
+    fewshot_split: validation
+    group_by: [domain, subject]
+    fields:
+      question: question
+      choices: [option1, option2, option3, option4]
+      answer: target
+      answer_format: option_key
+
+  - name: mmlu_en
+    type: mcq
+    description: MMLU (English) — anchor to compare Indic-language knowledge against English.
+    tags: [english, knowledge, text]
+    status: well-known schema
+    dataset: {path: cais/mmlu, name: all, split: test}
+    fewshot_split: dev
+    group_by: subject
+    fields: {question: question, choices: choices, answer: answer, answer_format: index0}
+
+  # ------------------------------------------------------------------ classification
+  - name: indicsentiment_{lang}
+    type: mcq
+    description: IndicSentiment — product-review sentiment (binary), human-translated.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur]
+    tags: [indic, classification, sentiment, text]
+    status: column names verified; loaded from raw JSON files (repo uses a legacy script)
+    dataset:
+      data_files: "hf://datasets/ai4bharat/IndicSentiment/data/test/{iso}.json"
+      format: json
+      split: test
+    choices: [Positive, Negative]
+    fields: {review: INDIC REVIEW, answer: LABEL, answer_format: text}
+    metrics: [accuracy, macro_f1]
+    prompt:
+      template: |-
+        What is the sentiment of the following product review?
+
+        {review}
+
+        A. Positive
+        B. Negative
+        Answer with the option's letter from the given choices directly.
+      template_native:
+        ta: |-
+          பின்வரும் தயாரிப்பு மதிப்பாய்வின் உணர்வு என்ன?
+
+          {review}
+
+          A. நேர்மறை (Positive)
+          B. எதிர்மறை (Negative)
+          சரியான விடையின் எழுத்தை மட்டும் பதிலாக அளிக்கவும்.
+
+  - name: indicxnli_{lang}
+    type: mcq
+    description: IndicXNLI — XNLI machine-translated to 11 Indic languages (3-way NLI).
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as]
+    tags: [indic, nli, reasoning, text]
+    status: fields verified; raw-file path inferred from repo layout (forward/test/xnli_{iso}.json)
+    dataset:
+      data_files: "hf://datasets/Divyanshu/indicxnli/forward/test/xnli_{iso}.json"
+      format: json
+      split: test
+    choices: [entailment, neutral, contradiction]
+    fields: {premise: premise, hypothesis: hypothesis, answer: label, answer_format: index0}
+    metrics: [accuracy, macro_f1]
+    prompt:
+      template: |-
+        {L_premise}: {premise}
+        {L_hypothesis}: {hypothesis}
+
+        Does the premise entail the hypothesis?
+        A. Entailment (the hypothesis is definitely true)
+        B. Neutral (the hypothesis might be true)
+        C. Contradiction (the hypothesis is definitely false)
+        Answer with the option's letter from the given choices directly.
+
+  # ------------------------------------------------------------------ QA
+  - name: indicqa_{lang}
+    type: qa
+    description: IndicQA — extractive QA over Indic Wikipedia (SQuAD format), answerable subset.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as]
+    tags: [indic, qa, extractive, text]
+    status: fields verified; loaded from raw SQuAD JSON (legacy-script repo)
+    dataset:
+      data_files: "hf://datasets/ai4bharat/IndicQA/data/indicqa.{iso}.json"
+      format: json
+      json_field: data
+      split: test
+      preprocess: [squad_flatten, drop_unanswerable]
+    fields: {id: id, context: context, question: question, answers: answers.text}
+    metrics: [exact_match, f1, char_f1]
+    max_new_tokens: 48
+
+  # ------------------------------------------------------------------ translation
+  - name: flores_en-{lang}
+    family: flores_en2xx
+    type: generation
+    description: FLORES+ devtest, English → Indic translation (chrF++ primary).
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur, ne]
+    tags: [indic, translation, text]
+    status: well-known schema (gated — accept terms on HF + set HF_TOKEN)
+    source_lang: en
+    target_lang: "{iso}"
+    dataset:
+      path: openlanguagedata/flores_plus
+      split: devtest
+      pair: {source: {name: eng_Latn}, target: {name: "{flores}"}, column: text, join_on: id}
+    fields: {id: id, source: source, target: target}
+    metrics: [chrf, bleu, script_fidelity]
+    max_new_tokens: 256
+
+  - name: flores_{lang}-en
+    family: flores_xx2en
+    type: generation
+    description: FLORES+ devtest, Indic → English translation.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur, ne]
+    tags: [indic, translation, text]
+    status: well-known schema (gated)
+    source_lang: "{iso}"
+    target_lang: en
+    dataset:
+      path: openlanguagedata/flores_plus
+      split: devtest
+      pair: {source: {name: "{flores}"}, target: {name: eng_Latn}, column: text, join_on: id}
+    fields: {id: id, source: source, target: target}
+    metrics: [chrf, bleu]
+    max_new_tokens: 256
+
+  - name: in22conv_en-{lang}
+    family: in22conv_en2xx
+    type: generation
+    description: IN22-Conv (AI4Bharat) — conversational English → Indic translation, 22 scheduled languages.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur, ne, sa, sat, mni]
+    tags: [indic, translation, conversational, text]
+    status: column naming verified on mteb/IN22-Conv mirror (sentence_<flores>)
+    source_lang: en
+    target_lang: "{iso}"
+    dataset: {path: mteb/IN22-Conv, split: test}
+    fields: {id: id, source: sentence_eng_Latn, target: "sentence_{flores}"}
+    group_by: domain
+    metrics: [chrf, bleu, script_fidelity]
+    max_new_tokens: 200
+
+  # ------------------------------------------------------------------ summarisation
+  - name: xlsum_{lang}
+    type: generation
+    subtype: summarization
+    description: XL-Sum — BBC article → one-sentence summary in the same language.
+    languages: [ta, hi, te, bn, mr, gu, pa, ur, ne]
+    tags: [indic, summarization, generation, text]
+    status: well-known schema; if your `datasets` refuses the legacy script, use data_files (README)
+    dataset: {path: csebuetnlp/xlsum, name: "{xlsum}", split: test}
+    target_lang: "{iso}"
+    fields: {id: id, source: text, target: summary}
+    metrics: [rouge_l, chrf, script_fidelity]
+    max_input_chars: 6000
+    max_new_tokens: 128

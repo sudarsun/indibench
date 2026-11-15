@@ -1,0 +1,37 @@
+# Task groups (suites). Entries may be task names, glob patterns, or other groups.
+# Combine with `--languages ta,hi` (or `indic`, `dravidian`) to filter language-expanded tasks.
+
+groups:
+  tamil_text:
+    description: Tamil text understanding, knowledge, QA, translation and summarisation.
+    tasks: [belebele_ta, milu_ta, indicsentiment_ta, indicxnli_ta, indicqa_ta,
+            flores_en-ta, flores_ta-en, in22conv_en-ta, xlsum_ta]
+  tamil_vision:
+    description: Tamil-script OCR and Tamil-output visual grounding.
+    tasks: [synth_ocr_ta, pope_xl_ta]
+  tamil:
+    description: Everything Tamil (text + vision) plus English anchors.
+    tasks: [tamil_text, tamil_vision, belebele_en, pope]
+  tamil_open:
+    description: Tamil suite restricted to datasets that need no gated access.
+    tasks: [belebele_ta, indicsentiment_ta, indicxnli_ta, indicqa_ta, in22conv_en-ta, synth_ocr_ta, pope_xl_ta]
+
+  indic_text:
+    description: Cross-lingual text suite — use with --languages to pick languages.
+    tasks: ["belebele_*", "milu_*", "indicsentiment_*", "indicxnli_*", "indicqa_*", "flores_en-*", "in22conv_en-*"]
+  indic_vision:
+    description: Indic-script OCR and cross-lingual grounding.
+    tasks: ["synth_ocr_*", "pope_xl_*"]
+
+  vision_core:
+    description: Standard multimodal capability suite (English).
+    tasks: [mmmu_val, mathvista_testmini, chartqa, docvqa_val, textvqa_val, ocrbench, ai2d,
+            scienceqa_img, mmbench_en_dev, pope, mme]
+
+  quick:
+    description: Smoke suite — a handful of fast tasks; pair with --limit 50.
+    tasks: [belebele_ta, belebele_en, indicsentiment_ta, synth_ocr_ta, pope_xl_ta, pope, ai2d, chartqa]
+
+  full:
+    description: Everything except predict-only tasks.
+    tasks: [indic_text, indic_vision, vision_core, mmlu_en, xlsum_ta, flores_ta-en]

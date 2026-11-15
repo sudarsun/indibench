@@ -1,0 +1,123 @@
+# Standard (mostly English) multimodal benchmarks. All are public on the HF Hub.
+
+tasks:
+  - name: mmmu_val
+    type: mmmu
+    description: MMMU validation — college-level multi-discipline, interleaved multi-image questions.
+    tags: [vision, reasoning, knowledge, multi_image]
+    status: well-known schema
+    dataset:
+      path: MMMU/MMMU
+      split: validation
+      names: [Accounting, Agriculture, Architecture_and_Engineering, Art, Art_Theory, Basic_Medical_Science,
+              Biology, Chemistry, Clinical_Medicine, Computer_Science, Design,
+              Diagnostics_and_Laboratory_Medicine, Economics, Electronics, Energy_and_Power, Finance,
+              Geography, History, Literature, Manage, Marketing, Materials, Math, Mechanical_Engineering,
+              Music, Pharmacy, Physics, Psychology, Public_Health, Sociology]
+    group_by: _config
+    max_new_tokens: 64
+
+  - name: mathvista_testmini
+    type: mathvista
+    description: MathVista testmini — visual math reasoning (rule-based answer extraction).
+    tags: [vision, math, reasoning]
+    status: well-known schema
+    dataset: {path: AI4Math/MathVista, split: testmini}
+    group_by: metadata.task
+    max_new_tokens: 512
+
+  - name: chartqa
+    type: vqa
+    description: ChartQA test — chart understanding, relaxed accuracy (±5 %).
+    tags: [vision, chart, ocr]
+    status: well-known schema
+    dataset: {path: HuggingFaceM4/ChartQA, split: test}
+    fields: {image: image, question: query, answers: label}
+    group_by: human_or_machine
+    metrics: [relaxed_accuracy, exact_match]
+    max_new_tokens: 32
+
+  - name: docvqa_val
+    type: vqa
+    description: DocVQA validation — document image QA, ANLS.
+    tags: [vision, document, ocr]
+    status: well-known schema
+    dataset: {path: lmms-lab/DocVQA, name: DocVQA, split: validation}
+    fields: {id: questionId, image: image, question: question, answers: answers}
+    metrics: [anls, exact_match]
+    max_new_tokens: 32
+
+  - name: textvqa_val
+    type: vqa
+    description: TextVQA validation — reading text in natural images, VQA soft accuracy.
+    tags: [vision, ocr, scene_text]
+    status: well-known schema
+    dataset: {path: lmms-lab/textvqa, split: validation}
+    fields: {id: question_id, image: image, question: question, answers: answers}
+    metrics: [vqa_accuracy, exact_match]
+    max_new_tokens: 32
+
+  - name: ocrbench
+    type: vqa
+    description: OCRBench — 1000 OCR-centric questions across 5 skills (substring match).
+    tags: [vision, ocr]
+    status: well-known schema
+    dataset: {path: echo840/OCRBench, split: test}
+    fields: {image: image, question: question, answers: answer}
+    group_by: question_type
+    metrics: [contains]
+    first_line_only: false
+    max_new_tokens: 64
+    prompt: {template: "{question}"}
+
+  - name: ai2d
+    type: mcq
+    description: AI2D test — science diagram multiple choice.
+    tags: [vision, diagram, science]
+    status: well-known schema
+    dataset: {path: lmms-lab/ai2d, split: test}
+    fields: {image: image, question: question, choices: options, answer: answer, answer_format: index0}
+
+  - name: scienceqa_img
+    type: mcq
+    description: ScienceQA test, image subset — K-12 science MCQ with context hints.
+    tags: [vision, science, reasoning]
+    status: well-known schema
+    dataset: {path: derek-thomas/ScienceQA, split: test, filter: {image: __notnull__}}
+    group_by: subject
+    fields: {image: image, question: question, hint: hint, choices: choices, answer: answer, answer_format: index0}
+
+  - name: mmbench_en_dev
+    type: mcq
+    description: MMBench (English) dev — broad perception/reasoning ability taxonomy.
+    tags: [vision, general]
+    status: well-known schema
+    dataset: {path: lmms-lab/MMBench, name: en, split: dev}
+    group_by: category
+    fields: {id: index, image: image, question: question, hint: hint, choices: [A, B, C, D], answer: answer,
+             answer_format: letter}
+
+  - name: pope
+    type: vqa
+    description: POPE — object hallucination probe (yes/no), adversarial/popular/random splits.
+    tags: [vision, hallucination]
+    status: well-known schema
+    dataset: {path: lmms-lab/POPE, split: test}
+    group_by: category
+    fields: {id: question_id, image: image, question: question, answers: answer}
+    metrics: [yesno_accuracy]
+    prompt:
+      template: "{question}\nAnswer with yes or no only."
+    max_new_tokens: 8
+
+  - name: mme
+    type: vqa
+    description: MME — 14 perception & cognition subtasks, yes/no questions.
+    tags: [vision, perception, cognition]
+    status: well-known schema
+    dataset: {path: lmms-lab/MME, split: test}
+    group_by: category
+    fields: {id: question_id, image: image, question: question, answers: answer}
+    metrics: [yesno_accuracy]
+    prompt: {template: "{question}"}
+    max_new_tokens: 8

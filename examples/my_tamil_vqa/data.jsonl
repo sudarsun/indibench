@@ -1,0 +1,3 @@
+{"id": "ex0", "image": "images/0.png", "question": "இந்தப் படத்தில் உள்ள வட்டத்தின் நிறம் என்ன?", "answers": ["சிவப்பு"], "options": ["சிவப்பு", "நீலம்", "பச்சை", "மஞ்சள்"], "answer_idx": 0, "topic": "colours"}
+{"id": "ex1", "image": "images/1.png", "question": "இந்தப் படத்தில் உள்ள வட்டத்தின் நிறம் என்ன?", "answers": ["நீலம்"], "options": ["சிவப்பு", "நீலம்", "பச்சை", "மஞ்சள்"], "answer_idx": 1, "topic": "colours"}
+{"id": "ex2", "image": "images/2.png", "question": "இந்தப் படத்தில் உள்ள வட்டத்தின் நிறம் என்ன?", "answers": ["பச்சை"], "options": ["சிவப்பு", "நீலம்", "பச்சை", "மஞ்சள்"], "answer_idx": 2, "topic": "colours"}
