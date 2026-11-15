@@ -1,0 +1,11 @@
+# A ~30B VLM on a single L40S via 4-bit NF4 (bitsandbytes). Expect ~2-3x slower generation than bf16.
+hardware_profile: l40s
+model:
+  backend: hf
+  name_or_path: Qwen/Qwen2.5-VL-32B-Instruct
+  quantization: 4bit
+  image: {max_pixels: 802816}        # tighter visual-token budget
+run:
+  tasks: [tamil_text, tamil_vision]
+  limit: 100
+  batch_size: 4

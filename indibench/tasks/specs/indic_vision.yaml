@@ -1,0 +1,57 @@
+# Multimodal probes for Tamil and other Indic languages.
+
+tasks:
+  - name: synth_ocr_{lang}
+    type: synthetic_ocr
+    description: Render native-script sentences (built-in list) and ask for an exact transcription. Grapheme CER.
+    languages: [ta, hi]
+    tags: [indic, vision, ocr, synthetic]
+    status: self-contained (needs a font with the script; Noto Sans recommended)
+    text_source: builtin
+    max_new_tokens: 128
+
+  - name: synth_ocr_flores_{lang}
+    type: synthetic_ocr
+    description: Same OCR probe, sentences taken from FLORES+ devtest (gated) for wider language coverage.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, ur]
+    tags: [indic, vision, ocr, synthetic]
+    status: needs FLORES+ access and a font for the script
+    text_source: {path: openlanguagedata/flores_plus, name: "{flores}", split: devtest, field: text}
+    max_chars: 100
+    max_new_tokens: 160
+
+  - name: pope_xl_{lang}
+    type: vqa
+    description: >-
+      Cross-lingual POPE — English object question, the model must reply yes/no *in the
+      target language*. Measures grounding + instruction following + output language control.
+    languages: [ta, hi, te, kn, ml, bn, mr, gu]
+    tags: [indic, vision, hallucination, cross_lingual]
+    status: builds on lmms-lab/POPE
+    dataset: {path: lmms-lab/POPE, split: test}
+    group_by: category
+    fields: {id: question_id, image: image, question: question, answers: answer}
+    metrics: [yesno_accuracy, script_fidelity]
+    target_lang: "{iso}"
+    max_new_tokens: 16
+    prompt:
+      template: "{question}\nAnswer only with the {name} word for yes or no: \"{yes_word}\" or \"{no_word}\"."
+      template_native:
+        ta: "{question}\nஇந்தக் கேள்விக்கு \"ஆம்\" அல்லது \"இல்லை\" என்று தமிழில் மட்டும் பதிலளிக்கவும்."
+        hi: "{question}\nइस प्रश्न का उत्तर केवल हिंदी में \"हाँ\" या \"नहीं\" में दें।"
+
+  - name: cvqa_{lang}
+    type: mcq
+    description: >-
+      CVQA — culturally-grounded VQA written by native speakers (Tamil-India etc.). Test labels are
+      hidden, so this is PREDICT-ONLY: predictions are saved for leaderboard submission.
+    languages: [ta, te, bn, mr, hi, ur]
+    tags: [indic, vision, culture, predict_only]
+    status: schema verified; ~5 GB download; labels hidden (Label = -1)
+    predict_only: true
+    dataset:
+      path: afaji/cvqa
+      split: test
+      filter: {Subset: "('{Name}', 'India')"}
+    group_by: Category
+    fields: {id: ID, image: image, question: Question, choices: Options, answer: Label, answer_format: index0}

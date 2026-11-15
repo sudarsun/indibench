@@ -1,0 +1,8 @@
+# Fast multimodal capability check (~10 min for a 7B model on an L40S).
+model:
+  backend: hf
+  name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
+run:
+  tasks: [vision_core]
+  limit: 100
+  batch_size: 8

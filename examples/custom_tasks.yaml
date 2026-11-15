@@ -1,0 +1,36 @@
+# Your own benchmarks: point indibench at local JSONL/CSV/Parquet files (or any HF dataset).
+# Run:  indibench run -m <model> --task-file examples/custom_tasks.yaml -t my_tamil_vqa_open,my_tamil_vqa_mcq
+# Image paths in the file are resolved relative to the data file's directory.
+
+tasks:
+  - name: my_tamil_vqa_open
+    type: vqa
+    lang: ta
+    target_lang: ta                      # enables script_fidelity for Tamil output
+    description: Open-ended Tamil VQA on local images.
+    tags: [custom, indic, vision]
+    dataset: {path: examples/my_tamil_vqa/data.jsonl, split: test}
+    group_by: topic
+    fields: {id: id, image: image, question: question, answers: answers}
+    metrics: [exact_match, char_f1, contains, script_fidelity]
+    prompt:
+      template: "{question}\nஒரு சொல்லில் தமிழில் விடையளிக்கவும்."
+    max_new_tokens: 16
+
+  - name: my_tamil_vqa_mcq
+    type: mcq
+    lang: ta
+    description: Same data as 4-way multiple choice.
+    tags: [custom, indic, vision]
+    dataset: {path: examples/my_tamil_vqa/data.jsonl, split: test}
+    fields: {id: id, image: image, question: question, choices: options, answer: answer_idx, answer_format: index0}
+
+  # Template for a Hugging Face dataset with a per-language config:
+  # - name: mybench_{lang}
+  #   type: mcq
+  #   languages: [ta, te, kn, ml]
+  #   dataset: {path: my-org/my-bench, name: "{flores}", split: test}   # {iso} {name} {flores} {xlsum}
+  #   fields: {question: q, choices: [a, b, c, d], answer: label, answer_format: letter}
+
+groups:
+  my_suite: [my_tamil_vqa_open, my_tamil_vqa_mcq, belebele_ta]

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "indibench"
+version = "0.1.0"
+description = "Benchmarking harness for multimodal LLMs with first-class Tamil and Indic language support"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "pyyaml>=6.0",
+  "datasets>=2.19",
+  "pillow>=10.0",
+  "rich>=13.0",
+  "sacrebleu>=2.4",
+  "numpy>=1.24",
+  "huggingface_hub>=0.23",
+]
+
+[project.optional-dependencies]
+hf = ["torch>=2.2", "transformers>=4.49", "accelerate>=0.30"]
+quant = ["bitsandbytes>=0.43"]
+vllm = ["vllm>=0.6.4"]
+api = ["openai>=1.30"]
+dev = ["pytest>=7"]
+all = ["torch>=2.2", "transformers>=4.49", "accelerate>=0.30", "bitsandbytes>=0.43", "openai>=1.30", "pytest>=7"]
+
+[project.scripts]
+indibench = "indibench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["indibench*"]
+
+[tool.setuptools.package-data]
+"indibench" = ["tasks/specs/*.yaml", "resources/*"]
