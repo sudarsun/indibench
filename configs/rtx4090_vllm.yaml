@@ -1,0 +1,15 @@
+# RTX 4090 (24 GB, Ada sm_89): bf16, FlashAttention-2 and FP8. vLLM for throughput.
+hardware_profile: rtx4090
+model:
+  backend: vllm
+  name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
+  max_model_len: 8192
+  gpu_memory_utilization: 0.88       # leave room for the display/desktop if the card drives a monitor
+  # 12-14B models: on-the-fly FP8 weights (Ada only) roughly halve weight memory
+  # name_or_path: google/gemma-3-12b-it
+  # quantization: fp8
+run:
+  tasks: [indic_text, indic_vision]
+  languages: [indic_major]
+  limit: 200
+  batch_size: 32                     # vLLM schedules internally

@@ -1,0 +1,14 @@
+# H200 (141 GB HBM3e; Hopper sm_90): a 72B VLM with FP8 weights plus long context and many images.
+hardware_profile: h200
+model:
+  backend: vllm
+  name_or_path: Qwen/Qwen2.5-VL-72B-Instruct
+  quantization: fp8                  # ~79 GB weights -> ~45 GB left for KV cache and visual tokens
+  max_model_len: 32768
+  gpu_memory_utilization: 0.92
+  image: {max_images: 8}
+run:
+  tasks: [full]
+  limit: 1000
+  sampling: stratified
+  batch_size: 128

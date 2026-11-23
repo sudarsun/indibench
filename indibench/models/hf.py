@@ -33,8 +33,13 @@ class HFModel(BaseModel):
 
         dtype_name = _DTYPES.get(str(cfg.dtype).lower(), cfg.dtype)
         self.dtype = "auto" if dtype_name == "auto" else getattr(torch, dtype_name)
-        if self.dtype == torch.bfloat16 and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
-            log.warning("GPU lacks bf16 support; falling back to float16")
+        from indibench.hardware import primary_gpu
+
+        self.gpu = primary_gpu()
+        # Decide from compute capability: is_bf16_supported() also returns True for the
+        # (very slow) emulated bf16 path on Turing cards such as the RTX 2080 Ti.
+        if self.gpu is not None and not self.gpu.bf16 and self.dtype in ("auto", torch.bfloat16):
+            log.warning("%s has no native bf16; using float16", self.gpu.name)
             self.dtype = torch.float16
 
         proc_path = cfg.processor_name_or_path or cfg.name_or_path
@@ -74,10 +79,17 @@ class HFModel(BaseModel):
         kwargs["dtype" if major_minor >= (4, 56) else "torch_dtype"] = self.dtype
         if cfg.device_map:
             kwargs["device_map"] = cfg.device_map
+        if cfg.max_gpu_memory_gb and self.torch.cuda.is_available():
+            # Cap per-GPU usage (rest is offloaded to CPU) — useful on 11-24 GB consumer cards.
+            kwargs["max_memory"] = {i: f"{cfg.max_gpu_memory_gb}GiB" for i in range(self.torch.cuda.device_count())}
+            kwargs["max_memory"]["cpu"] = cfg.extra.get("max_cpu_memory", "64GiB")
         if cfg.quantization in ("4bit", "8bit"):
             from transformers import BitsAndBytesConfig
 
-            compute = self.dtype if self.dtype != "auto" else self.torch.bfloat16
+            if self.dtype != "auto":
+                compute = self.dtype
+            else:
+                compute = self.torch.bfloat16 if (self.gpu is None or self.gpu.bf16) else self.torch.float16
             kwargs["quantization_config"] = (
                 BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                    bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=compute)
@@ -85,7 +97,7 @@ class HFModel(BaseModel):
         elif cfg.quantization:
             log.warning("quantization=%s is ignored by the hf backend (pre-quantized checkpoints load as-is)",
                         cfg.quantization)
-        kwargs.update(cfg.extra or {})
+        kwargs.update({k: v for k, v in (cfg.extra or {}).items() if k not in ("max_cpu_memory",)})
 
         classes = []
         if self.supports_images:
@@ -207,7 +219,7 @@ class HFModel(BaseModel):
         if "pixel_values" in inputs and self.dtype != "auto":
             inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
         max_new = max((r.max_new_tokens or gen.max_new_tokens) for r in batch)
-        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id}
+        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id, "max_length": None}
         if gen.temperature and gen.temperature > 0:
             kw.update(do_sample=True, temperature=gen.temperature, top_p=gen.top_p)
             if gen.top_k:
@@ -259,6 +271,11 @@ class HFModel(BaseModel):
             "params_b": round(sum(p.numel() for p in self.model.parameters()) / 1e9, 3),
             "supports_images": self.supports_images,
         })
+        if self.gpu is not None:
+            d["gpu"] = f"{self.gpu.name} ({self.gpu.arch}, sm_{self.gpu.capability[0]}{self.gpu.capability[1]})"
+        devmap = getattr(self.model, "hf_device_map", None)
+        if devmap and any(str(v) in ("cpu", "disk") for v in devmap.values()):
+            d["cpu_offload"] = True
         if torch.cuda.is_available():
             d["peak_gpu_mem_gb"] = round(torch.cuda.max_memory_allocated() / 1024**3, 2)
         return d

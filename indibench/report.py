@@ -74,11 +74,14 @@ def render_markdown(payload: Dict[str, Any]) -> str:
                  f"dtype: {model.get('dtype', cfg.get('model', {}).get('dtype'))}, "
                  f"quantization: {model.get('quantization') or 'none'}")
     if gpu:
-        lines.append(f"- GPU: {gpu.get('name')} ({gpu.get('memory_gb')} GB)")
+        lines.append(f"- GPU: {gpu.get('name')} ({gpu.get('memory_gb')} GB, CC {gpu.get('compute_capability', '?')}, "
+                     f"driver {gpu.get('driver', '?')}, CUDA {gpu.get('cuda', '?')})")
     run = cfg.get("run", {})
     lines.append(f"- limit per task: {run.get('limit') or 'all'}, sampling: {run.get('sampling')}, seed: {run.get('seed')}, "
                  f"instruction_lang: {run.get('instruction_lang')}")
     lines.append(f"- total time: {payload.get('elapsed_s', 0):.0f}s")
+    for note in payload.get("hardware_notes") or []:
+        lines.append(f"- ⚠ hardware: {note}")
     lines.append("")
     lines.append("## Results")
     lines.append("")

@@ -1,0 +1,16 @@
+# H100 (80 GB SXM/PCIe, 94 GB NVL; Hopper sm_90): bf16, FlashAttention (FA3 inside vLLM), FP8.
+# 32B VLM in bf16, or a 72B VLM with FP8 weights.
+hardware_profile: h100
+model:
+  backend: vllm
+  name_or_path: Qwen/Qwen2.5-VL-32B-Instruct
+  max_model_len: 16384
+  gpu_memory_utilization: 0.92
+  # name_or_path: Qwen/Qwen2.5-VL-72B-Instruct
+  # quantization: fp8                # ~79 GB of weights: use H100 NVL (94 GB) or H200; on 80 GB use an AWQ checkpoint
+run:
+  tasks: [tamil, indic_text, vision_core]
+  languages: [ta, hi, te, kn, ml, en]
+  limit: 500
+  sampling: stratified
+  batch_size: 64

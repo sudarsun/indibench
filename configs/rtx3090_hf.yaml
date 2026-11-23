@@ -1,0 +1,10 @@
+# RTX 3090 (24 GB, Ampere sm_86): bf16 + FlashAttention-2. 7-8B VLMs in bf16.
+hardware_profile: rtx3090
+model:
+  backend: hf
+  name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
+  attn_implementation: flash_attention_2   # falls back to sdpa automatically if flash-attn is missing
+run:
+  tasks: [tamil, vision_core]
+  limit: 200
+  sampling: stratified

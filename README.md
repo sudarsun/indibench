@@ -1,8 +1,11 @@
 # indibench
 
 A command-line benchmarking harness for **multimodal LLMs**, built for testing models in **Tamil and
-other Indic languages**. It covers standard vision benchmarks too, and it is sized for **one L40S or
-A100 GPU**.
+other Indic languages**. It covers standard vision benchmarks too, and it is sized for **a single
+GPU**:
+
+* **Workstation cards:** RTX 2080 Ti (11 GB), RTX 3090 or RTX 4090 (24 GB).
+* **Data-center cards:** L40S (48 GB), A100 (40/80 GB), H100 (80/94 GB) or H200 (141 GB).
 
 * **25 task specs, expanded to 149 tasks.** Belebele, MILU, IndicSentiment, IndicXNLI, IndicQA, FLORES+,
   IN22-Conv, XL-Sum, MMMU, MathVista, ChartQA, DocVQA, TextVQA, OCRBench, AI2D, ScienceQA, MMBench,
@@ -27,24 +30,30 @@ A100 GPU**.
 
 ## 1. Install
 
+**On a fresh Ubuntu 24.04 or 26.04 machine**, follow [`docs/SETUP_UBUNTU.md`](docs/SETUP_UBUNTU.md).
+It covers the NVIDIA driver (workstation and data-center/HGX, including Fabric Manager and MIG), the
+optional CUDA toolkit, `uv` virtual environments, PyTorch, vLLM, Hugging Face access and
+troubleshooting. You can also run the script that does all of it:
+
 ```bash
-cd indibench
-pip install -e ".[hf]"            # transformers backend (torch, transformers, accelerate)
-pip install -e ".[hf,quant]"      # + bitsandbytes 4/8-bit
-pip install -e ".[vllm]"          # + vLLM backend
-pip install flash-attn --no-build-isolation   # optional; works on L40S (Ada) and A100 (Ampere)
+bash scripts/setup_ubuntu.sh           # driver + .venv; reboot when asked, then:
+bash scripts/setup_ubuntu.sh --driver skip --vllm
+```
+
+On a machine that already has a driver ≥ 580:
+
+```bash
+uv venv --python 3.12 .venv && source .venv/bin/activate
+uv pip install torch torchvision
+uv pip install -e ".[hf,quant]"                       # transformers backend + bitsandbytes 4/8-bit
+uv pip install flash-attn --no-build-isolation        # optional; Ampere or newer (3090/4090/L40S/A100/H100/H200), not 2080 Ti
+# vLLM: put it in its own venv (it pins its own torch), see docs/SETUP_UBUNTU.md
 ```
 
 Several datasets are **gated** on the Hugging Face Hub: MILU, FLORES+, Belebele and IN22. Accept their
-terms on huggingface.co, then run:
+terms on huggingface.co, then run `hf auth login` or `export HF_TOKEN=hf_xxx`.
 
-```bash
-export HF_TOKEN=hf_xxx
-```
-
-The synthetic OCR task needs a font for each script it renders. On Debian/Ubuntu:
-`sudo apt install fonts-noto-core libraqm0`. libraqm is needed for correct Indic glyph shaping.
-Pillow wheels usually include it already.
+The synthetic OCR task needs a font for each script it renders: `sudo apt install fonts-noto-core libraqm0`.
 
 ## 2. Quick start
 
@@ -82,7 +91,7 @@ caps the samples per task.
 | `check TASKS` | Load a few rows of each task and parse them. Use it to catch gated or broken datasets before a long GPU run. |
 | `report RUN_DIR` | Re-render `report.md` / `summary.csv`. |
 | `compare RUN...` | Side-by-side primary metrics with deltas. |
-| `env` | GPU and library versions, the detected hardware profile and model-size guidance. |
+| `env [-m MODEL] [--quantization 4bit]` | GPU capabilities (bf16 / FA2 / FP8), driver, auto profile and a memory-fit verdict for a model. |
 | `init-config PATH` | Write an annotated example YAML. |
 
 ## 4. Configuration
@@ -94,7 +103,7 @@ Run `indibench init-config my.yaml` for a fully annotated file. The sections and
 | `model` | `backend`, `name_or_path`, `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
 | `generation` | `max_new_tokens` (tasks may set their own), `temperature`, `top_p`, `stop`, `strip_thinking`, `enable_thinking` |
 | `run` | `tasks`, `languages`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
-| `hardware_profile` | `l40s`, `a100-40g`, `a100-80g` or `auto`. A profile only fills in keys you have not set yourself. |
+| `hardware_profile` | `auto` (the default) detects the GPU. You can also give `rtx2080ti`, `rtx3090`, `rtx4090`, `l40s`, `a100-40g`, `a100-80g`, `h100`, `h200` or `none`. A profile only fills in keys you have not set yourself. |
 
 **Sample selection.** `limit` sets the number of samples per task. It can be an integer, a fraction,
 or `null` for all. `sampling: random` takes a seeded random subset. `first` takes the first N rows.
@@ -154,22 +163,53 @@ extraction), `chartqa` (relaxed accuracy), `docvqa_val` (ANLS), `textvqa_val` (V
   depends on English scaffolding. The extractors also read answers written as `விடை: B`, `ஆம்`,
   `இல்லை` and so on.
 
-## 7. Single-GPU guidance (L40S 48 GB / A100 40–80 GB)
+## 7. Single-GPU guidance
 
-| model size | L40S 48 GB | A100 40 GB | A100 80 GB |
-|---|---|---|---|
-| ≤ 8B | bf16, batch 8–16 | bf16, batch 6–8 | bf16, batch 16+ |
-| 11–14B | bf16, batch 4–8 | `--quantization 8bit` or 4bit | bf16 |
-| 26–38B | `--quantization 4bit` (hf) or an AWQ checkpoint (vllm) | 4bit, tight | bf16 (tight) or 8bit |
-| 70B+ | not recommended | not recommended | AWQ/GPTQ 4-bit with vLLM |
+indibench reads the GPU's compute capability and VRAM at start-up (`hardware_profile: auto`, the
+default). It then fills in sensible defaults and makes the following automatic adjustments:
 
-* **Visual tokens drive memory use.** Every image is resized to `model.image.max_pixels` (about 1 MP
-  by default). Lower it with `--max-pixels 602112` for multi-image MMMU questions or long documents.
-* **vLLM is often 3–10× faster** on generation-heavy suites such as translation, summarisation and
-  OCR. Use `--batch-size 64` or more; vLLM does the scheduling itself.
+* **bf16 → fp16** on Turing (RTX 2080 Ti). PyTorch can report bf16 as "supported" there through
+  slow emulation, so indibench decides from the compute capability instead.
+* **FlashAttention-2 → SDPA** on cards older than Ampere.
+* **Warnings** for models known to overflow in fp16 (Gemma), for FP8 on cards without FP8 tensor
+  cores, for vLLM on sm_75, and when the model probably won't fit in VRAM. The warning suggests
+  `8bit`/`4bit`.
+
+| | RTX 2080 Ti | RTX 3090 | RTX 4090 | L40S | A100 40 GB | A100 80 GB | H100 80/94 GB | H200 141 GB |
+|---|---|---|---|---|---|---|---|---|
+| arch / CC | Turing 7.5 | Ampere 8.6 | Ada 8.9 | Ada 8.9 | Ampere 8.0 | Ampere 8.0 | Hopper 9.0 | Hopper 9.0 |
+| dtype · attention | fp16 · SDPA | bf16 · FA2 | bf16 · FA2 | bf16 · FA2 | bf16 · FA2 | bf16 · FA2 | bf16 · FA2/FA3 | bf16 · FA2/FA3 |
+| FP8 | – | – | ✓ | ✓ | – | – | ✓ | ✓ |
+| profile | `rtx2080ti` | `rtx3090` | `rtx4090` | `l40s` | `a100-40g` | `a100-80g` | `h100` | `h200` |
+| batch · context · px/image | 2 · 4k · 0.35 MP | 4 · 8k · 0.6 MP | 4 · 8k · 0.6 MP | 8 · 8k · 1 MP | 6 · 8k · 0.8 MP | 16 · 16k · 1.25 MP | 16 · 16k · 1.25 MP | 24 · 32k · 1.25 MP |
+| 2–4B VLM | fp16 | bf16 | bf16 | bf16 | bf16 | bf16 | bf16 | bf16 |
+| 7–8B VLM | 4bit | bf16 | bf16 | bf16 | bf16 | bf16 | bf16 | bf16 |
+| 11–14B | – | 8bit / 4bit | fp8 / 8bit | bf16 | 8bit | bf16 | bf16 | bf16 |
+| 26–38B | – | 4bit (tight) | 4bit (tight) | 4bit / AWQ | 4bit | bf16 (tight) | bf16 (tight) / fp8 | bf16 |
+| 70–90B | – | – | – | – | – | 4bit / AWQ | AWQ; fp8 on NVL 94 GB | fp8 / 8bit |
+
+MIG slices of an A100/H100/H200 are sized by the memory they expose. 8-GPU HGX (NVSwitch) systems
+need Fabric Manager; see [`docs/SETUP_UBUNTU.md`](docs/SETUP_UBUNTU.md) §2b.
+
+```bash
+indibench env -m Qwen/Qwen2.5-VL-7B-Instruct      # capabilities + "will it fit?" for this GPU
+indibench run -c configs/rtx2080ti_hf.yaml        # one config per GPU class: rtx3090_hf, rtx4090_vllm,
+                                                  # tamil_l40s_hf, a100_80g_hf, indic_a100_vllm, h100_vllm, h200_vllm
+```
+
+* **Visual tokens drive memory use.** Every image is resized to `model.image.max_pixels`. Lower it
+  (`--max-pixels 401408`) for multi-image MMMU questions or long documents.
+* **vLLM is often 3–10× faster** on generation-heavy suites. On a 2080 Ti it runs with fallback
+  kernels, and some architectures don't start; use `--backend hf` in that case.
+* If generation runs out of memory, the hf backend splits the batch and retries. Setting
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (on by default) reduces fragmentation on
+  11–24 GB cards.
+* `--max-gpu-memory 10` caps VRAM use and offloads the rest of the model to CPU RAM. Larger models
+  then run on small cards, at 5–20× lower speed.
+* With several consumer GPUs (e.g. 2× 3090), the hf backend splits the model across them through
+  `device_map=auto`. For vLLM, use `--set model.tensor_parallel_size=2`.
 * `--mcq-mode loglikelihood` scores MCQ options by log-probability instead of parsing generated text.
-  It works on the hf backend with or without images, and on the vllm backend for text-only prompts.
-* If generation runs out of memory, the hf backend splits the batch and retries automatically.
+  It works on the hf backend (text or images) and on vllm for text-only prompts.
 * For reasoning models, use `--disable-thinking` or raise `--max-new-tokens`. `<think>` blocks are
   stripped before scoring.
 
@@ -232,5 +272,5 @@ papers.
 
 ```bash
 pip install -e ".[dev]"
-pytest -q        # offline tests: metrics, sampling, resume, dummy/openai/hf backends (tiny local LLaVA)
+pytest -q        # offline tests: metrics, sampling, resume, GPU capability logic, dummy/openai/hf backends
 ```

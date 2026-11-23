@@ -61,7 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--api-base", dest="model.api_base", help="OpenAI-compatible endpoint (backend=openai)")
     g.add_argument("--concurrency", dest="model.concurrency", type=int)
     g.add_argument("--system-prompt", dest="model.system_prompt")
-    g.add_argument("--hardware-profile", dest="hardware_profile", help="l40s|a100-40g|a100-80g|auto")
+    g.add_argument("--hardware-profile", dest="hardware_profile",
+                   help="auto (default) | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200")
+    g.add_argument("--max-gpu-memory", dest="model.max_gpu_memory_gb", type=float,
+                   help="hf: cap GiB per GPU and offload the rest to CPU RAM")
     g = r.add_argument_group("generation")
     g.add_argument("--max-new-tokens", dest="generation.max_new_tokens", type=int)
     g.add_argument("--temperature", dest="generation.temperature", type=float)
@@ -122,7 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
         if a.dest and "." in a.dest and a.metavar is None and a.nargs != 0 and a.const is None:
             a.metavar = a.dest.split(".")[-1].upper()
 
-    sub.add_parser("env", help="show GPU / library info and recommended settings")
+    ev = sub.add_parser("env", help="show GPU / library info, capability checks and model-fit advice")
+    ev.add_argument("-m", "--model", help="model id to check memory fit for, e.g. Qwen/Qwen2.5-VL-7B-Instruct")
+    ev.add_argument("--quantization", help="4bit | 8bit | awq | gptq | fp8")
+    ev.add_argument("--dtype", default="bfloat16")
 
     ic = sub.add_parser("init-config", help="write an annotated example config")
     ic.add_argument("path")
@@ -303,28 +309,51 @@ def cmd_compare(args) -> int:
 
 
 def cmd_env(args) -> int:
-    from indibench.config import HARDWARE_PROFILES, detect_hardware_profile
+    from indibench.config import HARDWARE_PROFILES
+    from indibench.hardware import check_fit, detect_gpus, profile_for
     from indibench.runner import environment_info
 
     info = environment_info()
     print(json.dumps(info, indent=2))
-    prof = detect_hardware_profile()
-    print(f"\nDetected hardware profile: {prof or 'none (no CUDA GPU)'}")
-    if prof:
-        print("Defaults applied with --hardware-profile auto:", json.dumps(HARDWARE_PROFILES[prof]))
+    gpus = detect_gpus()
+    if not gpus:
+        print("\nNo CUDA GPU visible to PyTorch. Check `nvidia-smi`, the driver (>= 580 for CUDA 13 wheels) "
+              "and that torch was installed with CUDA (torch.version.cuda above should not be null).")
+        return 1
+    for i, g in enumerate(gpus):
+        yes = lambda b: "yes" if b else "NO"  # noqa: E731
+        print(f"\nGPU{i}: {g.name} | {g.arch} sm_{g.capability[0]}{g.capability[1]} | {g.memory_gb:.1f} GB | "
+              f"bf16 {yes(g.bf16)} | FlashAttention-2 {yes(g.flash_attn2)} | FP8 {yes(g.fp8)}")
+        if not g.supported_by_torch_cu13:
+            print("  !! Pre-Turing GPU: current PyTorch CUDA-13 wheels have no kernels for it.")
+    prof = profile_for(gpus[0])
+    print(f"\nAuto hardware profile: {prof}")
+    print("  fills unset keys:", json.dumps(HARDWARE_PROFILES[prof]))
+    if args.model:
+        dtype = args.dtype if gpus[0].bf16 or args.dtype == "float32" else "float16"
+        fit = check_fit(args.model, dtype, args.quantization, gpus[0], len(gpus))
+        print(f"\nModel fit for {args.model} ({dtype}, quantization={args.quantization or 'none'}):")
+        if fit.verdict == "unknown":
+            print("  could not infer the parameter count from the name")
+        else:
+            print(f"  ~{fit.params_b:g}B params -> ~{fit.weights_gb:.1f} GB weights on {fit.gpu_gb:.0f} GB "
+                  f"total VRAM: {fit.verdict.upper()}{' - ' + fit.advice if fit.advice else ''}")
     print("""
-Single-GPU sizing guide (bf16 weights ≈ 2 bytes/param, plus KV cache + vision tokens):
-  ≤ 8B  VLMs  : bf16 fits on L40S 48GB and A100 40/80GB      (batch 8–16)
-  11–14B      : bf16 on L40S / A100-80G; A100-40G → --quantization 8bit or 4bit
-  26–34B      : A100-80G bf16 (tight) / L40S → 4bit (hf) or AWQ/GPTQ checkpoint (vllm)
-  ≥ 70B       : 4bit on A100-80G only; prefer AWQ + vLLM
-Use --backend vllm for 3–10× throughput on generation-heavy suites; --max-pixels to cap visual tokens.""")
+Sizing guide (weights only; add 2-8 GB for activations, KV cache and visual tokens):
+            2080Ti 11G  3090/4090 24G  L40S 48G   A100 40G   A100 80G / H100 80G  H200 141G
+  2-4B VLM  fp16        bf16           bf16       bf16       bf16                 bf16
+  7-8B VLM  4bit        bf16           bf16       bf16       bf16                 bf16
+  11-14B    --          8bit/4bit/fp8* bf16       8bit       bf16                 bf16
+  26-38B    --          4bit (tight)   4bit/AWQ   4bit       bf16 (tight)/8bit    bf16
+  70-90B    --          --             --         --         4bit/AWQ (H100: fp8*) 8bit/fp8*
+  * fp8 = vLLM --quantization fp8, Ada/Hopper only (RTX 4090, L40S, H100, H200).
+Turing (2080 Ti): float16 only, no FlashAttention-2, no FP8. Use --backend hf if vLLM fails to start.""")
     return 0
 
 
 EXAMPLE_CONFIG = """\
 # indibench example configuration — every key can be overridden on the CLI with --set key=value
-hardware_profile: auto          # l40s | a100-40g | a100-80g | auto (fills unset defaults)
+hardware_profile: auto          # auto | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200
 
 model:
   backend: hf                   # hf | vllm | openai | dummy
@@ -374,6 +403,8 @@ def cmd_init_config(args) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    # Reduce CUDA memory fragmentation — matters most on 11-24 GB cards. Must be set before torch init.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = build_parser().parse_args(argv)
     handlers = {"run": cmd_run, "list": cmd_list, "inspect": cmd_inspect, "check": cmd_check,
                 "report": cmd_report, "compare": cmd_compare, "env": cmd_env, "init-config": cmd_init_config}

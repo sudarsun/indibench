@@ -42,8 +42,18 @@ def environment_info() -> Dict[str, Any]:
         if torch.cuda.is_available():
             p = torch.cuda.get_device_properties(0)
             info["gpu"] = {"name": p.name, "memory_gb": round(p.total_memory / 1024**3, 1),
+                           "compute_capability": f"{p.major}.{p.minor}",
                            "count": torch.cuda.device_count(), "cuda": torch.version.cuda,
-                           "bf16": torch.cuda.is_bf16_supported()}
+                           "bf16_native": (p.major, p.minor) >= (8, 0)}
+            try:
+                import subprocess
+
+                drv = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                                     capture_output=True, text=True, timeout=10).stdout.strip().splitlines()
+                if drv:
+                    info["gpu"]["driver"] = drv[0]
+            except Exception:
+                pass
     except Exception:
         pass
     return info
@@ -98,6 +108,11 @@ class Evaluator:
         log.info("Tasks (%d): %s", len(self.task_names), ", ".join(self.task_names))
 
         if self.model is None:
+            from indibench.hardware import harden_config
+
+            self.hardware_notes = harden_config(cfg)
+            if self.hardware_notes:
+                dump_config(cfg, os.path.join(self.run_dir, "config.yaml"))  # record adjusted dtype etc.
             t0 = time.time()
             self.model = load_model(cfg.model)
             log.info("Model ready in %.1fs", time.time() - t0)
@@ -125,7 +140,8 @@ class Evaluator:
 
     def _payload(self, results, env, elapsed) -> Dict[str, Any]:
         return {"model": self.model.info() if self.model else {"name": self.cfg.model.name_or_path},
-                "config": self.cfg.to_dict(), "env": env, "elapsed_s": round(elapsed, 1), "results": results}
+                "config": self.cfg.to_dict(), "env": env, "elapsed_s": round(elapsed, 1),
+                "hardware_notes": getattr(self, "hardware_notes", []), "results": results}
 
     def _write(self, results, env, elapsed) -> None:
         from indibench.report import write_reports

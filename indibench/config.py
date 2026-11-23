@@ -26,6 +26,7 @@ class ModelConfig:
     processor_name_or_path: Optional[str] = None
     dtype: str = "bfloat16"                      # bfloat16 | float16 | float32 | auto
     device_map: str = "auto"
+    max_gpu_memory_gb: Optional[float] = None    # hf: cap VRAM per GPU, offload the rest to CPU
     attn_implementation: Optional[str] = "sdpa"  # sdpa | flash_attention_2 | eager
     quantization: Optional[str] = None           # 4bit | 8bit (bitsandbytes, hf) | awq/gptq/fp8 (vllm)
     trust_remote_code: bool = False
@@ -100,7 +101,8 @@ class BenchConfig:
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     run: RunConfig = field(default_factory=RunConfig)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
-    hardware_profile: Optional[str] = None             # l40s | a100-40g | a100-80g | auto
+    # auto (detect) | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200
+    hardware_profile: Optional[str] = "auto"
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -128,7 +130,54 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 16384,
         "model.image.max_pixels": 1600 * 28 * 28,
     },
+    "h100": {  # 80 GB (SXM/PCIe) or 94 GB (NVL), Hopper (sm_90): bf16, FA2 (FA3 in vLLM), FP8
+        "run.batch_size": 16,
+        "model.gpu_memory_utilization": 0.92,
+        "model.max_model_len": 16384,
+        "model.image.max_pixels": 1600 * 28 * 28,
+    },
+    "h200": {  # 141 GB HBM3e, Hopper (sm_90): room for 70B in 8-bit/FP8 or 32B in bf16 with long context
+        "run.batch_size": 24,
+        "model.gpu_memory_utilization": 0.92,
+        "model.max_model_len": 32768,
+        "model.image.max_pixels": 1600 * 28 * 28,
+    },
+    # ---- consumer cards -------------------------------------------------------------
+    "rtx4090": {  # 24 GB, Ada (sm_89): bf16, FlashAttention-2, FP8
+        "run.batch_size": 4,
+        "model.gpu_memory_utilization": 0.88,
+        "model.max_model_len": 8192,
+        "model.image.max_pixels": 768 * 28 * 28,
+        "model.image.max_images": 6,
+    },
+    "rtx3090": {  # 24 GB, Ampere (sm_86): bf16, FlashAttention-2, no FP8
+        "run.batch_size": 4,
+        "model.gpu_memory_utilization": 0.88,
+        "model.max_model_len": 8192,
+        "model.image.max_pixels": 768 * 28 * 28,
+        "model.image.max_images": 6,
+    },
+    "rtx2080ti": {  # 11 GB, Turing (sm_75): NO bf16, NO FlashAttention-2 -> fp16 + sdpa
+        "run.batch_size": 2,
+        "model.dtype": "float16",
+        "model.attn_implementation": "sdpa",
+        "model.gpu_memory_utilization": 0.85,
+        "model.max_model_len": 4096,
+        "model.image.max_pixels": 448 * 28 * 28,
+        "model.image.max_images": 4,
+        "generation.max_new_tokens": 192,
+    },
 }
+
+HARDWARE_PROFILES["rtx2080ti-bf16"] = {  # small MIG slice of an A100/H100: bf16-capable but ~10 GB
+    k: v for k, v in HARDWARE_PROFILES["rtx2080ti"].items() if k not in ("model.dtype", "model.attn_implementation")}
+
+PROFILE_ALIASES = {"h100-80g": "h100", "h100-sxm": "h100", "h100-pcie": "h100", "h100-nvl": "h100",
+                   "h200-141g": "h200", "h200-sxm": "h200", "h200-nvl": "h200", "gh200": "h200",
+                   "l40": "l40s", "l40s-48g": "l40s",
+                   "a100": "a100-80g", "a100-80": "a100-80g", "a100-40": "a100-40g",
+                   "4090": "rtx4090", "rtx-4090": "rtx4090", "3090": "rtx3090", "rtx-3090": "rtx3090",
+                   "2080ti": "rtx2080ti", "2080": "rtx2080ti", "rtx-2080ti": "rtx2080ti", "rtx2080": "rtx2080ti"}
 
 
 def _coerce(value: str) -> Any:
@@ -186,24 +235,9 @@ def _from_dict(cls, data: Dict[str, Any]):
 
 
 def detect_hardware_profile() -> Optional[str]:
-    try:
-        import torch
+    from indibench.hardware import primary_gpu, profile_for
 
-        if not torch.cuda.is_available():
-            return None
-        name = torch.cuda.get_device_name(0).lower()
-        mem_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    except Exception:
-        return None
-    if "l40" in name:
-        return "l40s"
-    if "a100" in name or "h100" in name or "h200" in name:
-        return "a100-80g" if mem_gb > 60 else "a100-40g"
-    if mem_gb >= 70:
-        return "a100-80g"
-    if mem_gb >= 44:
-        return "l40s"
-    return "a100-40g"
+    return profile_for(primary_gpu())
 
 
 def load_config(
@@ -234,7 +268,17 @@ def load_config(
         _set_path(user, k.strip(), _coerce(v.strip()))
 
     # Hardware profile only fills keys the user did not specify explicitly.
-    profile = user.get("hardware_profile")
+    profile = user.get("hardware_profile", BenchConfig().hardware_profile)
+    if isinstance(profile, str):
+        profile = PROFILE_ALIASES.get(profile.lower(), profile.lower())
+        user["hardware_profile"] = profile
+    if profile in ("none", "off"):
+        profile = None
+        user["hardware_profile"] = None
+    backend = _get_path(user, "model.backend") or ModelConfig().backend
+    if profile == "auto" and backend in ("openai", "dummy"):
+        profile = None          # the GPU (if any) is not ours to size
+        user["hardware_profile"] = None
     if profile == "auto":
         profile = detect_hardware_profile()
         user["hardware_profile"] = profile

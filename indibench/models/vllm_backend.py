@@ -22,9 +22,15 @@ class VLLMModel(BaseModel):
         except ImportError as e:  # pragma: no cover
             raise ImportError("vLLM backend needs: pip install 'indibench[vllm]'") from e
         self.SamplingParams = SamplingParams
+        from indibench.hardware import primary_gpu
+
+        gpu = primary_gpu()
+        dtype = cfg.dtype
+        if gpu is not None and not gpu.bf16 and str(dtype).lower() in ("bfloat16", "bf16", "auto"):
+            dtype = "float16"   # Turing (RTX 2080 Ti): no bf16
         kwargs: Dict[str, Any] = {
             "model": cfg.name_or_path,
-            "dtype": cfg.dtype,
+            "dtype": dtype,
             "trust_remote_code": cfg.trust_remote_code,
             "gpu_memory_utilization": cfg.gpu_memory_utilization,
             "tensor_parallel_size": cfg.tensor_parallel_size,

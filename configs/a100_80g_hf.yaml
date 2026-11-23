@@ -1,0 +1,10 @@
+# A100 80 GB (Ampere sm_80): bf16 + FlashAttention-2; no FP8 tensor cores (use 8bit/4bit/AWQ for big models).
+hardware_profile: a100-80g
+model:
+  backend: hf
+  name_or_path: google/gemma-3-27b-it
+  attn_implementation: flash_attention_2
+run:
+  tasks: [tamil]
+  limit: 300
+  sampling: stratified
