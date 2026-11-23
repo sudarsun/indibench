@@ -44,6 +44,7 @@ class ModelConfig:
     max_retries: int = 5
     image: ImageConfig = field(default_factory=ImageConfig)
     extra: Dict[str, Any] = field(default_factory=dict)   # forwarded to from_pretrained / vllm.LLM
+    trust_remote_code: bool = False
 
 
 @dataclass
@@ -117,30 +118,35 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.gpu_memory_utilization": 0.90,
         "model.max_model_len": 8192,
         "model.image.max_pixels": 1280 * 28 * 28,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "a100-40g": {
         "run.batch_size": 6,
         "model.gpu_memory_utilization": 0.88,
         "model.max_model_len": 8192,
         "model.image.max_pixels": 1024 * 28 * 28,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "a100-80g": {
         "run.batch_size": 16,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 16384,
         "model.image.max_pixels": 1600 * 28 * 28,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "h100": {  # 80 GB (SXM/PCIe) or 94 GB (NVL), Hopper (sm_90): bf16, FA2 (FA3 in vLLM), FP8
         "run.batch_size": 16,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 16384,
         "model.image.max_pixels": 1600 * 28 * 28,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "h200": {  # 141 GB HBM3e, Hopper (sm_90): room for 70B in 8-bit/FP8 or 32B in bf16 with long context
         "run.batch_size": 24,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 32768,
         "model.image.max_pixels": 1600 * 28 * 28,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     # ---- consumer cards -------------------------------------------------------------
     "rtx4090": {  # 24 GB, Ada (sm_89): bf16, FlashAttention-2, FP8
@@ -149,6 +155,7 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 8192,
         "model.image.max_pixels": 768 * 28 * 28,
         "model.image.max_images": 6,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "rtx3090": {  # 24 GB, Ampere (sm_86): bf16, FlashAttention-2, no FP8
         "run.batch_size": 4,
@@ -156,6 +163,7 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 8192,
         "model.image.max_pixels": 768 * 28 * 28,
         "model.image.max_images": 6,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "rtx2080ti": {  # 11 GB, Turing (sm_75): NO bf16, NO FlashAttention-2 -> fp16 + sdpa
         "run.batch_size": 2,
@@ -166,6 +174,7 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.image.max_pixels": 448 * 28 * 28,
         "model.image.max_images": 4,
         "generation.max_new_tokens": 192,
+        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
 }
 
