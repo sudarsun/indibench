@@ -55,6 +55,12 @@ def _get(row: Dict[str, Any], key: Any) -> Any:
     """Fetch a (possibly dotted) column, e.g. ``answers.text``."""
     if key is None:
         return None
+    if isinstance(key, str) and "|" in key:      # "eng_Latn|sentence_eng_Latn": first column present wins
+        for alt in key.split("|"):
+            v = _get(row, alt.strip())
+            if v is not None:
+                return v
+        return None
     cur: Any = row
     for part in str(key).split("."):
         if isinstance(cur, dict):
@@ -143,7 +149,11 @@ class Task:
 
     # ------------------------------------------------------------------ data
     def dataset_spec(self) -> Dict[str, Any]:
-        return dict(self.spec.get("dataset") or {})
+        ds = dict(self.spec.get("dataset") or {})
+        # Per-task `dataset.trust_remote_code` wins over the run-wide default.
+        if self.run.trust_remote_code is not None:
+            ds.setdefault("trust_remote_code", self.run.trust_remote_code)
+        return ds
 
     def load_source(self, max_rows: Optional[int] = None) -> RowSource:
         ds = self.dataset_spec()

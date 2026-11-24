@@ -37,6 +37,38 @@ def _hf_token(env_name: str) -> Optional[str]:
     return os.environ.get(env_name) or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
 
 
+_WARNED: set = set()
+
+
+def datasets_supports_remote_code() -> bool:
+    """``datasets`` < 4 can execute Hub loading scripts (``trust_remote_code``); >= 4 removed it."""
+    import inspect
+
+    import datasets
+
+    return "trust_remote_code" in inspect.signature(datasets.load_dataset).parameters
+
+
+def _remote_code_kwargs(dspec: Dict[str, Any]) -> Dict[str, Any]:
+    trc = dspec.get("trust_remote_code")
+    if trc is None:
+        return {}
+    if datasets_supports_remote_code():
+        if trc and dspec.get("path") not in _WARNED:
+            _WARNED.add(dspec.get("path"))
+            log.warning("trust_remote_code=true: executing the loading script of dataset %s", dspec.get("path"))
+        return {"trust_remote_code": bool(trc)}
+    if trc and "datasets>=4" not in _WARNED:
+        import datasets
+
+        _WARNED.add("datasets>=4")
+        log.warning("trust_remote_code=true has no effect for datasets: datasets %s cannot run loading scripts "
+                    "(support was removed in 4.0). Script-based datasets are read from the Hub's auto-converted "
+                    "parquet instead. To execute the original scripts, use an env with `pip install 'datasets<4'`.",
+                    datasets.__version__)
+    return {}
+
+
 def _load_raw(dspec: Dict[str, Any], split: str, streaming: bool, cache_dir: Optional[str], token: Optional[str]):
     """Return a ``datasets`` Dataset/IterableDataset for one (config, split)."""
     try:
@@ -76,6 +108,7 @@ def _load_raw(dspec: Dict[str, Any], split: str, streaming: bool, cache_dir: Opt
         kwargs["name"] = dspec["name"]
     if dspec.get("data_dir") is not None:
         kwargs["data_dir"] = dspec["data_dir"]
+    kwargs.update(_remote_code_kwargs(dspec))
     return datasets.load_dataset(path, split=split, **kwargs)
 
 

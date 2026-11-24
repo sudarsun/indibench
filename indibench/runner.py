@@ -243,8 +243,10 @@ class Evaluator:
         inf_time = time.time() - t_inf
 
         if not records:
-            raise DatasetLoadError(f"{task.name}: no usable samples (all {skipped} rows were rejected — "
-                                   f"check the field mapping with `indibench inspect {task.name}`)")
+            mapped = {k: v for k, v in task.fields.items() if isinstance(v, (str, list))}
+            raise DatasetLoadError(f"{task.name}: no usable samples (all {skipped} rows were rejected). "
+                                   f"Dataset columns: {src.column_names}; task field mapping: {mapped}. "
+                                   f"Fix `fields` (see `indibench inspect {task.name}`).")
         metrics = {} if task.predict_only else task.aggregate(records, cfg.run.bootstrap)
         primary = task.primary_metric()
         out: Dict[str, Any] = {

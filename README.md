@@ -104,9 +104,10 @@ Run `indibench init-config my.yaml` for a fully annotated file. The sections and
 
 | section | key settings |
 |---|---|
-| `model` | `backend`, `name_or_path`, `supports_images` (`false` declares a text-only model, which drops vision tasks), `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
+| `model` | `backend`, `name_or_path`, `trust_remote_code`, `supports_images` (`false` declares a text-only model, which drops vision tasks), `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
 | `generation` | `max_new_tokens` (tasks may set their own), `temperature`, `top_p`, `stop`, `strip_thinking`, `enable_thinking` |
-| `run` | `tasks`, `languages`, `modalities` (`[text]` for text-only models), `exclude`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
+| `run` | `tasks`, `languages`, `trust_remote_code` (datasets), `modalities` (`[text]` for text-only models), `exclude`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
+| `trust_remote_code` | `true`/`false` shorthand that sets both `model.trust_remote_code` and `run.trust_remote_code` (see §9). |
 | `hardware_profile` | `auto` (the default) detects the GPU. You can also give `rtx2080ti`, `rtx3090`, `rtx4090`, `l40s`, `a100-40g`, `a100-80g`, `h100`, `h200` or `none`. A profile only fills in keys you have not set yourself. |
 
 **Sample selection.** `limit` sets the number of samples per task. It can be an integer, a fraction,
@@ -129,7 +130,7 @@ example `belebele_ta` and `flores_en-ta`.
 | `indicxnli_*` | natural language inference | accuracy, macro-F1 | 11 |
 | `indicqa_*` | extractive QA over Indic Wikipedia | EM, token-F1, **char-F1** | 11 |
 | `flores_en-*`, `flores_*-en` | translation in both directions | chrF++, BLEU (flores200 spm), script fidelity | 13 |
-| `in22conv_en-*` | conversational-domain translation (IN22) | chrF++, BLEU, script fidelity, per-domain | 16 |
+| `in22conv_en-*` | conversational-domain translation (IN22; accepts `eng_Latn` or `sentence_eng_Latn` column styles) | chrF++, BLEU, script fidelity, per-domain | 16 |
 | `xlsum_*` | abstractive summarisation | Unicode-aware ROUGE-L, chrF++, script fidelity | 9 |
 | `mmlu_en` | English knowledge anchor | accuracy | en |
 
@@ -248,9 +249,13 @@ tasks:
       template_native: {ta: "வினா: {question}\n{choices_block}\nசரியான எழுத்தை மட்டும் எழுதவும்."}
 ```
 
+A field can name alternative columns: `source: "eng_Latn|sentence_eng_Latn"` uses the first column
+that exists. Mirrors of the same dataset often rename columns, and this handles that.
+
 The `dataset` block accepts `path`, `name`/`names` (several configs are concatenated), `data_dir`,
 `data_files` (including `hf://datasets/...` URLs and local json/jsonl/parquet/csv), `split`, `filter`,
-`preprocess` (`squad_flatten`, `drop_unanswerable`, `literal_eval`, `require_image`), `streaming`
+`preprocess` (`squad_flatten`, `drop_unanswerable`, `literal_eval`, `require_image`), `streaming`,
+`trust_remote_code`, `parquet_fallback`
 and `pair` (which zips two configs of a parallel corpus). The language placeholders are `{iso}`,
 `{name}`, `{Name}`, `{native}`, `{flores}` and `{xlsum}`.
 
@@ -268,6 +273,24 @@ Every task is tagged `text` or `image` according to whether it sends images to t
 
 `-x/--exclude` removes any tasks by name, glob, tag or group, for example `-x vision`,
 `-x 'xlsum_*,mmlu_en'` or `-x vision_core`.
+
+### Remote code (`trust_remote_code`)
+Remote code is **off by default** for both models and datasets. You can turn it on or off per
+component. Only enable it for repositories you trust: it runs Python code downloaded from the Hub.
+
+| what | YAML | CLI |
+|---|---|---|
+| model + processor (custom architectures such as InternVL, MiniCPM-V, Phi-3.5-vision) | `model.trust_remote_code: true` | `--model-trust-remote-code [true\|false]` |
+| dataset loading scripts | `run.trust_remote_code: true`, or per task `dataset.trust_remote_code` | `--dataset-trust-remote-code [true\|false]` |
+| both at once | `trust_remote_code: true` (top level) | `--trust-remote-code [true\|false]` (bare flag = true) |
+
+The more specific key wins, so `trust_remote_code: true` with `run.trust_remote_code: false` trusts
+only the model.
+
+For **datasets**, this setting only takes effect with `datasets` < 4, because version 4.0 removed
+the ability to run loading scripts. With newer `datasets`, indibench logs a warning and reads the
+Hub's auto-converted Parquet copy instead (below). To run a dataset's original script, use an
+environment with `pip install "datasets<4"`.
 
 ### How datasets are loaded, and fixing one
 The loader copes with two common Hub problems automatically:

@@ -36,6 +36,15 @@ def _limit(v: str):
         return f
 
 
+def _bool(v: str) -> bool:
+    t = str(v).strip().lower()
+    if t in ("true", "1", "yes", "on"):
+        return True
+    if t in ("false", "0", "no", "off"):
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
 def _csv(v: str) -> List[str]:
     return [x.strip() for x in v.split(",") if x.strip()]
 
@@ -53,7 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--dtype", dest="model.dtype")
     g.add_argument("--quantization", dest="model.quantization", help="4bit|8bit (hf, bitsandbytes) or awq|gptq|fp8 (vllm)")
     g.add_argument("--attn", dest="model.attn_implementation", help="sdpa|flash_attention_2|eager")
-    g.add_argument("--trust-remote-code", dest="model.trust_remote_code", action="store_const", const=True)
+    g.add_argument("--trust-remote-code", dest="trust_remote_code", type=_bool, nargs="?", const=True,
+                   metavar="true|false", help="allow Hub remote code for the model AND datasets (bare flag = true)")
+    g.add_argument("--model-trust-remote-code", dest="model.trust_remote_code", type=_bool, nargs="?", const=True,
+                   metavar="true|false", help="custom modeling/processor code for the model only")
+    g.add_argument("--dataset-trust-remote-code", dest="run.trust_remote_code", type=_bool, nargs="?", const=True,
+                   metavar="true|false", help="run dataset loading scripts (requires datasets<4)")
     g.add_argument("--max-model-len", dest="model.max_model_len", type=int)
     g.add_argument("--gpu-mem-util", dest="model.gpu_memory_utilization", type=float, help="vLLM memory fraction")
     g.add_argument("--max-pixels", dest="model.image.max_pixels", type=int, help="per-image pixel budget")
@@ -114,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--num-fewshot", type=int)
     ins.add_argument("--task-file", action="append", default=[])
     ins.add_argument("--save-images", help="directory to dump the images of the shown samples")
+    ins.add_argument("--trust-remote-code", type=_bool, nargs="?", const=True, metavar="true|false",
+                     help="run dataset loading scripts (requires datasets<4)")
 
     ck = sub.add_parser("check", help="verify that tasks load and parse (downloads data, no model)")
     ck.add_argument("tasks", type=_csv)
@@ -123,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("-x", "--exclude", type=_csv)
     ck.add_argument("--task-file", action="append", default=[])
     ck.add_argument("--rows", type=int, default=5)
+    ck.add_argument("--trust-remote-code", type=_bool, nargs="?", const=True, metavar="true|false",
+                    help="run dataset loading scripts (requires datasets<4)")
 
     rp = sub.add_parser("report", help="re-render reports for a finished run")
     rp.add_argument("run_dir")
@@ -152,7 +170,8 @@ def cmd_run(args) -> int:
     from indibench.runner import Evaluator
     from indibench.utils import setup_logging
 
-    cli_values: Dict[str, Any] = {k: v for k, v in vars(args).items() if "." in k or k == "hardware_profile"}
+    cli_values: Dict[str, Any] = {k: v for k, v in vars(args).items()
+                                  if "." in k or k in ("hardware_profile", "trust_remote_code")}
     if cli_values.get("run.limit") == "all":
         cli_values["run.limit"] = None
         args.overrides = list(args.overrides) + ["run.limit=null"]
@@ -227,13 +246,13 @@ def cmd_list(args) -> int:
     return 0
 
 
-def _make_task(name: str, task_files, instruction_lang="en", num_fewshot=None):
+def _make_task(name: str, task_files, instruction_lang="en", num_fewshot=None, trust_remote_code=None):
     from indibench.config import ImageConfig, RunConfig
     from indibench.tasks.base import build_task
     from indibench.tasks.registry import TaskRegistry
 
     reg = TaskRegistry(task_files)
-    run = RunConfig(instruction_lang=instruction_lang, num_fewshot=num_fewshot)
+    run = RunConfig(instruction_lang=instruction_lang, num_fewshot=num_fewshot, trust_remote_code=trust_remote_code)
     return build_task(reg.get(name), run, ImageConfig())
 
 
@@ -241,7 +260,7 @@ def cmd_inspect(args) -> int:
     from indibench.utils import setup_logging
 
     setup_logging("WARNING")
-    task = _make_task(args.task, args.task_file, args.instruction_lang, args.num_fewshot)
+    task = _make_task(args.task, args.task_file, args.instruction_lang, args.num_fewshot, args.trust_remote_code)
     print(f"== {task.name}  (type={task.type_name}, lang={task.lang}, modality={task.modality})")
     print(f"   dataset: {json.dumps(task.dataset_spec(), ensure_ascii=False)}")
     src = task.load_source(max_rows=args.n + 20)
@@ -271,6 +290,8 @@ def cmd_inspect(args) -> int:
             break
     if shown == 0:
         print("\n!! No row produced a valid sample — fix the `fields` mapping for this task.")
+        print(f"   dataset columns: {src.column_names}")
+        print(f"   task mapping:    {task.fields}")
         return 1
     return 0
 
@@ -287,12 +308,13 @@ def cmd_check(args) -> int:
     ok = 0
     for name in names:
         try:
-            task = _make_task(name, args.task_file)
+            task = _make_task(name, args.task_file, trust_remote_code=args.trust_remote_code)
             src = task.load_source(max_rows=args.rows * 4)
             docs = [task.make_doc(r, i) for i, r in enumerate(src.rows(range(min(len(src), args.rows * 4))))]
             good = [d for d in docs if d is not None]
             if not good:
-                raise RuntimeError(f"0/{len(docs)} rows parsed — field mapping mismatch")
+                raise RuntimeError(f"0/{len(docs)} rows parsed — field mapping mismatch. "
+                                   f"Columns: {src.column_names}; mapping: {task.fields}")
             task.build_request(good[0])
             print(f"OK    {name:28s} rows={len(src):>7}  parsed={len(good)}/{len(docs)}")
             ok += 1
@@ -368,6 +390,7 @@ Turing (2080 Ti): float16 only, no FlashAttention-2, no FP8. Use --backend hf if
 
 EXAMPLE_CONFIG = """\
 # indibench example configuration — every key can be overridden on the CLI with --set key=value
+trust_remote_code: null         # true|false: shorthand for model.trust_remote_code + run.trust_remote_code
 hardware_profile: auto          # auto | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200
 
 model:
@@ -376,7 +399,7 @@ model:
   dtype: bfloat16
   attn_implementation: sdpa     # flash_attention_2 if installed
   quantization: null            # 4bit | 8bit (hf) ; awq | gptq | fp8 (vllm)
-  trust_remote_code: false
+  trust_remote_code: false      # custom model/processor code from the Hub (some VLMs need true)
   max_model_len: 8192
   gpu_memory_utilization: 0.90  # vllm
   system_prompt: null
@@ -406,6 +429,7 @@ run:
   resume: true
   bootstrap: 1000
   task_files: []                # your own task YAMLs
+  trust_remote_code: null       # datasets: run Hub loading scripts (only possible with datasets<4)
 """
 
 

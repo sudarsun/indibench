@@ -5,6 +5,22 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "run",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/indibench/cli.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "run",
+                "-m",
+                "unsloth/gemma-3-270m-it",
+                "-t",
+                "tamil",
+                "-n20"
+            ]
+        },
+        {
             "name": "inspect",
             "type": "debugpy",
             "request": "launch",

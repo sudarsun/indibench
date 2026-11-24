@@ -219,6 +219,8 @@ class SyntheticOCRTask(Task):
 
         field = src.get("field", "text")
         ds = {k: v for k, v in src.items() if k != "field"}
+        if self.run.trust_remote_code is not None:
+            ds.setdefault("trust_remote_code", self.run.trust_remote_code)
         s = load_rows(ds, ds.get("split"), cache_dir=self.run.cache_dir, token_env=self.run.hf_token_env)
         return RowSource([{"text": t} for t in s.column(field) if t])
 

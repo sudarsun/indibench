@@ -29,7 +29,7 @@ class ModelConfig:
     max_gpu_memory_gb: Optional[float] = None    # hf: cap VRAM per GPU, offload the rest to CPU
     attn_implementation: Optional[str] = "sdpa"  # sdpa | flash_attention_2 | eager
     quantization: Optional[str] = None           # 4bit | 8bit (bitsandbytes, hf) | awq/gptq/fp8 (vllm)
-    trust_remote_code: bool = False
+    trust_remote_code: bool = False              # model/processor: allow custom modeling code from the Hub
     chat_template: bool = True                   # apply the model's chat template
     system_prompt: Optional[str] = None
     supports_images: Optional[bool] = None       # null = auto-detect; false = text-only model (skip vision tasks)
@@ -45,7 +45,6 @@ class ModelConfig:
     max_retries: int = 5
     image: ImageConfig = field(default_factory=ImageConfig)
     extra: Dict[str, Any] = field(default_factory=dict)   # forwarded to from_pretrained / vllm.LLM
-    trust_remote_code: bool = False
 
 
 @dataclass
@@ -93,6 +92,7 @@ class RunConfig:
     task_files: List[str] = field(default_factory=list)  # extra YAML task-spec files
     cache_dir: Optional[str] = None                    # HF datasets cache
     hf_token_env: str = "HF_TOKEN"
+    trust_remote_code: Optional[bool] = None           # datasets: run Hub loading scripts (needs datasets<4)
     streaming: Optional[bool] = None                   # force streaming dataset loading for all tasks
     max_input_chars: Optional[int] = None              # truncate very long contexts (summarisation)
     log_level: str = "INFO"
@@ -107,6 +107,8 @@ class BenchConfig:
     judge: JudgeConfig = field(default_factory=JudgeConfig)
     # auto (detect) | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200
     hardware_profile: Optional[str] = "auto"
+    # Convenience: sets BOTH model.trust_remote_code and run.trust_remote_code unless those are given.
+    trust_remote_code: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -121,35 +123,30 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.gpu_memory_utilization": 0.90,
         "model.max_model_len": 8192,
         "model.image.max_pixels": 1280 * 28 * 28,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "a100-40g": {
         "run.batch_size": 6,
         "model.gpu_memory_utilization": 0.88,
         "model.max_model_len": 8192,
         "model.image.max_pixels": 1024 * 28 * 28,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "a100-80g": {
         "run.batch_size": 16,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 16384,
         "model.image.max_pixels": 1600 * 28 * 28,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "h100": {  # 80 GB (SXM/PCIe) or 94 GB (NVL), Hopper (sm_90): bf16, FA2 (FA3 in vLLM), FP8
         "run.batch_size": 16,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 16384,
         "model.image.max_pixels": 1600 * 28 * 28,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "h200": {  # 141 GB HBM3e, Hopper (sm_90): room for 70B in 8-bit/FP8 or 32B in bf16 with long context
         "run.batch_size": 24,
         "model.gpu_memory_utilization": 0.92,
         "model.max_model_len": 32768,
         "model.image.max_pixels": 1600 * 28 * 28,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     # ---- consumer cards -------------------------------------------------------------
     "rtx4090": {  # 24 GB, Ada (sm_89): bf16, FlashAttention-2, FP8
@@ -158,7 +155,6 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 8192,
         "model.image.max_pixels": 768 * 28 * 28,
         "model.image.max_images": 6,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "rtx3090": {  # 24 GB, Ampere (sm_86): bf16, FlashAttention-2, no FP8
         "run.batch_size": 4,
@@ -166,7 +162,6 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 8192,
         "model.image.max_pixels": 768 * 28 * 28,
         "model.image.max_images": 6,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
     "rtx2080ti": {  # 11 GB, Turing (sm_75): NO bf16, NO FlashAttention-2 -> fp16 + sdpa
         "run.batch_size": 2,
@@ -177,7 +172,6 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.image.max_pixels": 448 * 28 * 28,
         "model.image.max_images": 4,
         "generation.max_new_tokens": 192,
-        "model.trust_remote_code": True,  # some T5-based models require this to load
     },
 }
 
@@ -301,6 +295,15 @@ def load_config(
             if _get_path(user, k) is None:
                 _set_path(user, k, v)
 
+    top_trc = user.get("trust_remote_code")
+    if top_trc is not None:
+        if not isinstance(top_trc, bool):
+            raise ValueError("trust_remote_code must be true or false")
+        if _get_path(user, "model.trust_remote_code") is None:
+            _set_path(user, "model.trust_remote_code", top_trc)
+        if _get_path(user, "run.trust_remote_code") is None:
+            _set_path(user, "run.trust_remote_code", top_trc)
+
     data = _deep_merge(data, user)
     cfg = _from_dict(BenchConfig, data)
     _validate(cfg)
@@ -330,6 +333,10 @@ def _validate(cfg: BenchConfig) -> None:
         raise ValueError("run.batch_size must be >= 1")
     if isinstance(cfg.run.tasks, str):
         cfg.run.tasks = [t.strip() for t in cfg.run.tasks.split(",") if t.strip()]
+    for key, val in (("model.trust_remote_code", cfg.model.trust_remote_code),
+                     ("run.trust_remote_code", cfg.run.trust_remote_code)):
+        if val is not None and not isinstance(val, bool):
+            raise ValueError(f"{key} must be true or false, got {val!r}")
     if isinstance(cfg.run.modalities, str):
         cfg.run.modalities = [t.strip() for t in cfg.run.modalities.split(",") if t.strip()]
     for m in cfg.run.modalities or []:

@@ -166,11 +166,13 @@ tasks:
     description: IN22-Conv (AI4Bharat) — conversational English → Indic translation, 22 scheduled languages.
     languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as, ur, ne, sa, sat, mni]
     tags: [indic, translation, conversational, text]
-    status: column naming verified on mteb/IN22-Conv mirror (sentence_<flores>)
+    status: >-
+      mteb/IN22-Conv (parquet) names columns by FLORES code only (eng_Latn, tam_Taml, ...); the original
+      ai4bharat/IN22-Conv uses sentence_<code>. The mapping accepts either ("a|b" = first column present).
     source_lang: en
     target_lang: "{iso}"
     dataset: {path: mteb/IN22-Conv, split: test}
-    fields: {id: id, source: eng_Latn, target: "{flores}"}
+    fields: {id: id, source: "eng_Latn|sentence_eng_Latn", target: "{flores}|sentence_{flores}"}
     group_by: domain
     metrics: [chrf, bleu, script_fidelity]
     max_new_tokens: 200

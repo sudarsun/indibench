@@ -54,7 +54,7 @@ def test_registry_expansion():
     assert reg.specs["cvqa_ta"]["dataset"]["filter"]["Subset"] == "('Tamil', 'India')"
     names = reg.resolve(["indic_text"], ["ta"])
     assert names and all(reg.specs[n].get("lang") in ("ta", None) for n in names)
-    assert reg.specs["in22conv_en-ta"]["fields"]["target"] == "sentence_tam_Taml"
+    assert reg.specs["in22conv_en-ta"]["fields"]["target"] == "tam_Taml|sentence_tam_Taml"
 
 
 def test_config_precedence(tmp_path):
