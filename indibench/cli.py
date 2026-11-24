@@ -402,7 +402,7 @@ def cmd_init_config(args) -> int:
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: Optional[List[str]] = None) -> int:
     # Reduce CUDA memory fragmentation — matters most on 11-24 GB cards. Must be set before torch init.
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = build_parser().parse_args(argv)
@@ -413,7 +413,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     except (ValueError, KeyError, FileNotFoundError) as e:
         print(f"error: {e}", file=sys.stderr)
         code = 2
-    sys.exit(code)
+    
+    #sys.exit(code)
+    return code
 
 
 if __name__ == "__main__":
