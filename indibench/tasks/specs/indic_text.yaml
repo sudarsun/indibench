@@ -168,7 +168,7 @@ tasks:
     source_lang: en
     target_lang: "{iso}"
     dataset: {path: mteb/IN22-Conv, split: test}
-    fields: {id: id, source: sentence_eng_Latn, target: "sentence_{flores}"}
+    fields: {id: id, source: eng_Latn, target: "{flores}"}
     group_by: domain
     metrics: [chrf, bleu, script_fidelity]
     max_new_tokens: 200
