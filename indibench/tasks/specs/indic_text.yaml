@@ -87,13 +87,15 @@ tasks:
     description: IndicXNLI — XNLI machine-translated to 11 Indic languages (3-way NLI).
     languages: [ta, hi, te, kn, ml, bn, mr, gu, pa, or, as]
     tags: [indic, nli, reasoning, text]
-    status: fields verified; raw-file path inferred from repo layout (forward/test/xnli_{iso}.json)
+    status: >-
+      raw files verified (forward/test/xnli_{iso}.json). Each file is ONE JSON object whose single key
+      wraps the row list; the loader unwraps it. Labels may be ints (0/1/2) or names -> answer_format auto.
     dataset:
       data_files: "hf://datasets/Divyanshu/indicxnli/forward/test/xnli_{iso}.json"
       format: json
       split: test
     choices: [entailment, neutral, contradiction]
-    fields: {premise: premise, hypothesis: hypothesis, answer: label, answer_format: index0}
+    fields: {premise: premise, hypothesis: hypothesis, answer: label, answer_format: auto}
     metrics: [accuracy, macro_f1]
     prompt:
       template: |-
@@ -180,8 +182,10 @@ tasks:
     description: XL-Sum — BBC article → one-sentence summary in the same language.
     languages: [ta, hi, te, bn, mr, gu, pa, ur, ne]
     tags: [indic, summarization, generation, text]
-    status: well-known schema; if your `datasets` refuses the legacy script, use data_files (README)
-    dataset: {path: csebuetnlp/xlsum, name: "{xlsum}", split: test}
+    status: >-
+      repo uses a legacy loading script (rejected by datasets>=4); the loader automatically reads the
+      Hub's auto-converted parquet (refs/convert/parquet/<language>/...) instead
+    dataset: {path: csebuetnlp/xlsum, name: "{xlsum}", split: test, parquet_fallback: true}
     target_lang: "{iso}"
     fields: {id: id, source: text, target: summary}
     metrics: [rouge_l, chrf, script_fidelity]

@@ -158,6 +158,104 @@ def sample_indices(
     return sorted(idx[:k])
 
 
+def _unwrap_container(data):
+    """Undo JSON 'container' layouts that the generic json builder turns into 1-row tables.
+
+    * ``{"<any key>": [{...}, {...}]}``   -> the json builder yields ONE row with ONE list column
+      (IndicXNLI ships its files like this).
+    * ``{"col_a": [...], "col_b": [...]}`` -> one row of parallel lists (column-oriented JSON).
+
+    Returns a list of row dicts when a container is detected, otherwise ``data`` unchanged.
+    """
+    try:
+        n = len(data)
+        cols = list(data.column_names) if not isinstance(data, list) else (list(data[0].keys()) if data else [])
+    except Exception:
+        return data
+    if n == 0 or n > 16 or not cols:
+        return data
+    rows = data if isinstance(data, list) else [dict(r) for r in data]
+    # case 1: single column whose cells are lists of dicts
+    if len(cols) == 1:
+        cells = [r[cols[0]] for r in rows]
+        if all(isinstance(c, list) for c in cells) and any(c and isinstance(c[0], dict) for c in cells):
+            log.info("Unwrapping JSON container key %r (%d rows)", cols[0], sum(len(c) for c in cells))
+            return [dict(x) for c in cells for x in c]
+    # case 2: one row of equal-length parallel lists
+    if n == 1:
+        vals = rows[0]
+        lens = {len(v) for v in vals.values() if isinstance(v, list)}
+        if len(lens) == 1 and all(isinstance(v, list) for v in vals.values()) and lens.pop() > 1:
+            keys = list(vals)
+            log.info("Transposing column-oriented JSON (%d rows)", len(vals[keys[0]]))
+            return [dict(zip(keys, t)) for t in zip(*(vals[k] for k in keys))]
+    return data
+
+
+def _is_script_error(e: Exception) -> bool:
+    m = str(e).lower()
+    return "script" in m and ("no longer supported" in m or "loading script" in m or "trust_remote_code" in m) \
+        or "trust_remote_code" in m
+
+
+_SPLIT_ALIASES = {"validation": ["validation", "dev", "valid", "val"], "dev": ["dev", "validation", "valid"],
+                  "test": ["test"], "train": ["train"]}
+
+
+def pick_parquet_files(files: List[str], config: Optional[str], split: str) -> List[str]:
+    """Select the Hub auto-converted parquet files of one (config, split).
+
+    Handles both layouts the converter has produced over time:
+    ``<config>/<split>/0000.parquet`` and ``<config>/<prefix>-<split>.parquet``
+    (also ``partial-<split>/`` directories for very large datasets).
+    """
+    import re as _re
+
+    config = config or "default"
+    cands = [f for f in files if f.endswith(".parquet") and f.split("/", 1)[0] == config]
+    for name in _SPLIT_ALIASES.get(split, [split]):
+        pat = _re.compile(r"(^|[/_-])(partial-)?" + _re.escape(name) + r"([/_.-]|$)")
+        hit = [f for f in cands if pat.search(f.split("/", 1)[1] if "/" in f else f)]
+        if hit:
+            # If both layouts exist, use one of them only (never duplicate rows).
+            as_dir = [f for f in hit if _re.search(r"/(partial-)?" + _re.escape(name) + r"/", f)]
+            return sorted(as_dir or hit)
+    return []
+
+
+def _load_converted_parquet(dspec: Dict[str, Any], split: str, streaming: bool, cache_dir, token):
+    """Fallback for script-based Hub datasets: read the Hub's ``refs/convert/parquet`` branch."""
+    import datasets
+    from huggingface_hub import HfApi
+
+    repo = dspec["path"]
+    rev = "refs/convert/parquet"
+    files = HfApi(token=token).list_repo_files(repo, repo_type="dataset", revision=rev)
+    chosen = pick_parquet_files(files, dspec.get("name"), split)
+    if not chosen:
+        configs = sorted({f.split("/", 1)[0] for f in files if f.endswith(".parquet")})
+        raise DatasetLoadError(f"{repo}: no auto-converted parquet for config={dspec.get('name')!r} split={split!r} "
+                               f"on {rev}. Configs there: {configs[:40]}")
+    urls = [f"hf://datasets/{repo}@{rev.replace('/', '%2F')}/{f}" for f in chosen]
+    log.warning("%s uses a legacy loading script; reading the Hub's auto-converted parquet instead (%s)",
+                repo, ", ".join(chosen))
+    kw: Dict[str, Any] = {"cache_dir": cache_dir, "streaming": streaming}
+    if token:
+        kw["token"] = token
+    return datasets.load_dataset("parquet", data_files={split: urls}, split=split, **kw)
+
+
+def _load_with_fallback(dspec, split, streaming, cache_dir, token):
+    try:
+        return _load_raw(dspec, split, streaming, cache_dir, token)
+    except Exception as e:
+        hub_repo = dspec.get("path") and not os.path.exists(os.path.expanduser(dspec["path"])) \
+            and dspec.get("data_files") is None
+        if hub_repo and _is_script_error(e) and dspec.get("parquet_fallback", True):
+            return _load_converted_parquet(dspec, split, streaming, cache_dir, token)
+        raise
+
+
 class RowSource:
     """Lazily indexable rows: wraps a ``datasets.Dataset`` (images decoded only on access)
     or a plain list of dicts."""
@@ -238,15 +336,30 @@ def load_rows(
         for cfg_name in configs:
             sub = dict(dspec, name=cfg_name)
             sub.pop("names", None)
-            ds = _load_raw(sub, split, streaming, cache_dir, token)
+            ds = _load_with_fallback(sub, split, streaming, cache_dir, token)
             if streaming:
                 if max_rows is not None and dspec.get("shuffle_buffer"):
                     ds = ds.shuffle(seed=dspec.get("seed", 1234), buffer_size=int(dspec["shuffle_buffer"]))
-                part = _materialize(ds, flt, max_rows)
+                first = _materialize(ds, None, 2)
+                unwrapped = _unwrap_container(first) if first else first
+                if unwrapped is not first:      # container JSON: the whole file is one record
+                    part = _unwrap_container(_materialize(ds, None, None))
+                    part = [r for r in part if not flt or _matches(r, flt)]
+                    part = part[:max_rows] if max_rows is not None else part
+                else:
+                    part = _materialize(ds, flt, max_rows)
                 if multi:
                     for r in part:
                         r["_config"] = cfg_name
             else:
+                ds = _unwrap_container(ds)
+                if isinstance(ds, list):
+                    part = [r for r in ds if not flt or _matches(r, flt)]
+                    if multi:
+                        for r in part:
+                            r["_config"] = cfg_name
+                    parts.append(part)
+                    continue
                 if flt:
                     cols = list(flt)
                     ds = ds.filter(lambda *vals: _matches(dict(zip(cols, vals)), flt), input_columns=cols)
@@ -263,13 +376,13 @@ def load_rows(
             hint = (" -- access denied: if the dataset is gated, accept its terms on huggingface.co and "
                     f"export {token_env}=<your token>; otherwise check that huggingface.co is reachable")
         elif "script" in msg.lower() or "trust_remote_code" in msg.lower():
-            hint = (" -- this dataset relies on a legacy loading script; point the task at raw files "
-                    "with dataset.data_files (see README: 'Fixing a dataset').")
+            hint = (" -- this dataset relies on a legacy loading script and no auto-converted parquet was "
+                    "found; point the task at raw files with dataset.data_files (README: 'Fixing a dataset').")
         raise DatasetLoadError(f"Failed to load {dspec.get('path') or dspec.get('data_files')} "
                                f"(name={dspec.get('name')}, split={split}): {msg}{hint}") from e
 
-    if streaming:
-        data: Any = [r for part in parts for r in part]
+    if streaming or any(isinstance(p, list) for p in parts):
+        data: Any = [dict(r) for part in parts for r in part]
     elif len(parts) == 1:
         data = parts[0]
     else:

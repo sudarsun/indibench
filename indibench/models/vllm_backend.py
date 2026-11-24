@@ -57,6 +57,7 @@ class VLLMModel(BaseModel):
         kwargs.update({k: v for k, v in (cfg.extra or {}).items() if k != "pass_pixel_limits_to_processor"})
         self.llm = LLM(**kwargs)
         self.tokenizer = self.llm.get_tokenizer()
+        self.supports_images = _vllm_is_multimodal(self.llm)
 
     def _to_openai(self, req: Request) -> List[Dict[str, Any]]:
         msgs = []
@@ -130,3 +131,18 @@ class VLLMModel(BaseModel):
         d.update({"max_model_len": self.cfg.max_model_len, "gpu_memory_utilization": self.cfg.gpu_memory_utilization,
                   "quantization": self.cfg.quantization})
         return d
+
+
+def _vllm_is_multimodal(llm) -> bool:
+    """Ask vLLM whether the loaded architecture accepts images (defaults to True if unknown)."""
+    for path in ("llm_engine.model_config", "model_config", "llm_engine.vllm_config.model_config"):
+        obj = llm
+        try:
+            for attr in path.split("."):
+                obj = getattr(obj, attr)
+        except AttributeError:
+            continue
+        val = getattr(obj, "is_multimodal_model", None)
+        if isinstance(val, bool):
+            return val
+    return True

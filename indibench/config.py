@@ -32,6 +32,7 @@ class ModelConfig:
     trust_remote_code: bool = False
     chat_template: bool = True                   # apply the model's chat template
     system_prompt: Optional[str] = None
+    supports_images: Optional[bool] = None       # null = auto-detect; false = text-only model (skip vision tasks)
     max_model_len: Optional[int] = 8192          # truncation / vLLM context
     gpu_memory_utilization: float = 0.90         # vLLM only
     tensor_parallel_size: int = 1                # vLLM only
@@ -73,6 +74,8 @@ class JudgeConfig:
 class RunConfig:
     tasks: List[str] = field(default_factory=list)     # task names, glob patterns or group names
     languages: Optional[List[str]] = None              # filter language-expanded tasks, e.g. [ta, hi] or [indic]
+    modalities: Optional[List[str]] = None             # [text] for text-only models, [image], or null/[all]
+    exclude: List[str] = field(default_factory=list)   # task names, globs, tags or groups to drop
     limit: Optional[Union[int, float]] = None          # per task: int = N samples, float in (0,1] = fraction
     sampling: str = "random"                           # random | first | stratified
     stratify_by: Optional[str] = None                  # column for stratified sampling (default: task's group_by)
@@ -327,6 +330,15 @@ def _validate(cfg: BenchConfig) -> None:
         raise ValueError("run.batch_size must be >= 1")
     if isinstance(cfg.run.tasks, str):
         cfg.run.tasks = [t.strip() for t in cfg.run.tasks.split(",") if t.strip()]
+    if isinstance(cfg.run.modalities, str):
+        cfg.run.modalities = [t.strip() for t in cfg.run.modalities.split(",") if t.strip()]
+    for m in cfg.run.modalities or []:
+        if m not in ("text", "image", "all"):
+            raise ValueError(f"run.modalities entries must be text|image|all, got {m!r}")
+    if isinstance(cfg.run.exclude, str):
+        cfg.run.exclude = [t.strip() for t in cfg.run.exclude.split(",") if t.strip()]
+    if cfg.model.supports_images is False and not cfg.run.modalities:
+        cfg.run.modalities = ["text"]
     if isinstance(cfg.run.languages, str):
         cfg.run.languages = [t.strip() for t in cfg.run.languages.split(",") if t.strip()]
 

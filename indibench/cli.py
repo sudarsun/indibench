@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = r.add_argument_group("run")
     g.add_argument("-t", "--tasks", dest="run.tasks", type=_csv, help="comma list of tasks, globs or groups")
     g.add_argument("-l", "--languages", dest="run.languages", type=_csv, help="e.g. ta,hi or indic / dravidian")
+    g.add_argument("--modality", dest="run.modalities", type=_csv,
+                   help="keep only tasks of these modalities: text, image or all")
+    g.add_argument("--text-only", dest="run.modalities", action="store_const", const=["text"],
+                   help="skip every vision task (same as --modality text); use for text-only LLMs")
+    g.add_argument("-x", "--exclude", dest="run.exclude", type=_csv,
+                   help="drop tasks by name, glob, tag or group, e.g. 'vision,xlsum_*,mmlu_en'")
     g.add_argument("-n", "--limit", dest="run.limit", type=_limit,
                    help="samples per task: N, a fraction like 0.1, or 'all'")
     g.add_argument("--sampling", dest="run.sampling", choices=["random", "first", "stratified"])
@@ -96,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("list", help="list tasks and groups")
     ls.add_argument("--lang", type=_csv)
     ls.add_argument("--tag", type=_csv)
+    ls.add_argument("--modality", type=_csv, help="text and/or image")
     ls.add_argument("--groups", action="store_true", help="show groups only")
     ls.add_argument("--task-file", action="append", default=[])
     ls.add_argument("--json", action="store_true")
@@ -111,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     ck = sub.add_parser("check", help="verify that tasks load and parse (downloads data, no model)")
     ck.add_argument("tasks", type=_csv)
     ck.add_argument("--languages", type=_csv)
+    ck.add_argument("--modality", type=_csv, help="text and/or image")
+    ck.add_argument("--text-only", dest="modality", action="store_const", const=["text"])
+    ck.add_argument("-x", "--exclude", type=_csv)
     ck.add_argument("--task-file", action="append", default=[])
     ck.add_argument("--rows", type=int, default=5)
 
@@ -157,7 +167,8 @@ def cmd_run(args) -> int:
         import yaml
 
         reg = TaskRegistry(cfg.run.task_files)
-        names = reg.resolve(cfg.run.tasks, expand_language_filter(cfg.run.languages))
+        names = reg.resolve(cfg.run.tasks, expand_language_filter(cfg.run.languages),
+                            modalities=cfg.run.modalities, exclude=cfg.run.exclude)
         print(yaml.safe_dump(cfg.to_dict(), sort_keys=False, allow_unicode=True))
         print(f"# {len(names)} tasks: {', '.join(names)}")
         return 0
@@ -190,10 +201,13 @@ def cmd_list(args) -> int:
             continue
         if args.tag and not set(args.tag) & set(s.get("tags") or []):
             continue
+        if args.modality and s.get("modality", "text") not in args.modality:
+            continue
         rows.append((name, s.get("type"), s.get("lang") or "-", ",".join(s.get("tags") or []),
                      (s.get("description") or "").strip()))
     if args.json:
-        print(json.dumps([dict(zip(["name", "type", "lang", "tags", "description"], r)) for r in rows],
+        print(json.dumps([dict(zip(["name", "type", "lang", "tags", "description"], r),
+                               modality=reg.specs[r[0]].get("modality")) for r in rows],
                          ensure_ascii=False, indent=2))
         return 0
     try:
@@ -201,10 +215,10 @@ def cmd_list(args) -> int:
         from rich.table import Table
 
         t = Table(show_lines=False)
-        for c in ("task", "type", "lang", "tags", "description"):
+        for c in ("task", "type", "modality", "lang", "tags", "description"):
             t.add_column(c, overflow="fold")
         for r in rows:
-            t.add_row(r[0], r[1], r[2], r[3], r[4][:90])
+            t.add_row(r[0], r[1], reg.specs[r[0]].get("modality", "text"), r[2], r[3], r[4][:90])
         Console().print(t)
     except ImportError:
         for r in rows:
@@ -268,7 +282,8 @@ def cmd_check(args) -> int:
 
     setup_logging("ERROR")
     reg = TaskRegistry(args.task_file)
-    names = reg.resolve(args.tasks, expand_language_filter(args.languages))
+    names = reg.resolve(args.tasks, expand_language_filter(args.languages),
+                        modalities=args.modality, exclude=args.exclude)
     ok = 0
     for name in names:
         try:
@@ -378,6 +393,8 @@ generation:
 run:
   tasks: [tamil]                # tasks, globs (belebele_*) or groups (tamil, indic_text, vision_core, quick)
   languages: null               # e.g. [ta, hi] or [indic] to filter language-expanded tasks
+  modalities: null              # [text] for a text-only LLM (skips every vision task); [image]; null = all
+  exclude: []                   # drop tasks by name, glob, tag or group, e.g. [vision, "xlsum_*"]
   limit: 200                    # per task: int count, fraction (0.1), or null for all
   sampling: stratified          # random | first | stratified (uses task group_by, e.g. MILU subject)
   seed: 1234

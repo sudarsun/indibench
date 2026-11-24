@@ -74,6 +74,10 @@ indibench run -b vllm -m google/gemma-3-12b-it -t indic_text -l dravidian -n 300
 # From YAML, overriding a few keys
 indibench run -c configs/tamil_l40s_hf.yaml -n 50 --set model.quantization=4bit
 
+# Text-only LLM: skip every vision task (OCR, POPE, MMMU, ...) in whatever suites you select
+indibench run -m sarvamai/sarvam-m -t tamil,indic_text -l ta --text-only -n 200
+indibench run -m my-llm -t full -x 'vision,xlsum_*'     # or exclude by tag / glob / group
+
 # Compare two finished runs
 indibench compare results/Qwen2.5-VL-7B-Instruct__2026* results/gemma-3-12b-it__2026*
 ```
@@ -85,8 +89,8 @@ caps the samples per task.
 
 | command | purpose |
 |---|---|
-| `run` | Run benchmarks. Every config key has a flag, and `--set a.b=c` can override anything. `--dry-run` prints the resolved config and task list. |
-| `list [--lang ta] [--tag vision] [--groups]` | Browse the task catalogue. |
+| `run` | Run benchmarks. Every config key has a flag, and `--set a.b=c` can override anything. `--dry-run` prints the resolved config and task list. `--text-only` / `--modality text\|image` and `-x/--exclude` narrow the task list. |
+| `list [--lang ta] [--tag vision] [--modality text] [--groups]` | Browse the task catalogue. |
 | `inspect TASK` | Show dataset features and rendered prompts, and save the images (`--save-images DIR`). No model needed. |
 | `check TASKS` | Load a few rows of each task and parse them. Use it to catch gated or broken datasets before a long GPU run. |
 | `report RUN_DIR` | Re-render `report.md` / `summary.csv`. |
@@ -100,9 +104,9 @@ Run `indibench init-config my.yaml` for a fully annotated file. The sections and
 
 | section | key settings |
 |---|---|
-| `model` | `backend`, `name_or_path`, `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
+| `model` | `backend`, `name_or_path`, `supports_images` (`false` declares a text-only model, which drops vision tasks), `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
 | `generation` | `max_new_tokens` (tasks may set their own), `temperature`, `top_p`, `stop`, `strip_thinking`, `enable_thinking` |
-| `run` | `tasks`, `languages`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
+| `run` | `tasks`, `languages`, `modalities` (`[text]` for text-only models), `exclude`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
 | `hardware_profile` | `auto` (the default) detects the GPU. You can also give `rtx2080ti`, `rtx3090`, `rtx4090`, `l40s`, `a100-40g`, `a100-80g`, `h100`, `h200` or `none`. A profile only fills in keys you have not set yourself. |
 
 **Sample selection.** `limit` sets the number of samples per task. It can be an integer, a fraction,
@@ -250,9 +254,34 @@ The `dataset` block accepts `path`, `name`/`names` (several configs are concaten
 and `pair` (which zips two configs of a parallel corpus). The language placeholders are `{iso}`,
 `{name}`, `{Name}`, `{native}`, `{flores}` and `{xlsum}`.
 
-### Fixing a dataset
-Hub datasets sometimes move files or drop their loading scripts. Recent versions of `datasets`
-refuse script-based repositories. If `indibench check X` fails:
+### Text-only models
+Every task is tagged `text` or `image` according to whether it sends images to the model
+(`indibench list` shows a modality column). There are three ways to run a text-only LLM:
+
+* **`--text-only`** (same as `--modality text`, or `run.modalities: [text]` in YAML) drops every
+  vision task from the suites you selected.
+* **`--set model.supports_images=false`** (or `model.supports_images: false`) declares the model
+  text-only. indibench then drops vision tasks automatically.
+* **Automatic detection.** The hf and vllm backends detect text-only checkpoints themselves and skip
+  vision tasks with a warning. The openai backend can't tell, so use one of the two options above
+  for API models.
+
+`-x/--exclude` removes any tasks by name, glob, tag or group, for example `-x vision`,
+`-x 'xlsum_*,mmlu_en'` or `-x vision_core`.
+
+### How datasets are loaded, and fixing one
+The loader copes with two common Hub problems automatically:
+
+* **Legacy loading scripts.** `datasets` ≥ 4 refuses repositories that ship a `*.py` loader, such as
+  XL-Sum. When this happens, indibench reads the Hub's auto-converted Parquet copy on the
+  `refs/convert/parquet` branch. It handles both file layouts used there
+  (`<config>/<prefix>-<split>.parquet` and `<config>/<split>/NNNN.parquet`) and logs a warning.
+  Set `dataset.parquet_fallback: false` to turn this off.
+* **"Container" JSON files.** Some files hold one JSON object whose single key wraps all the rows
+  (IndicXNLI), or are column-oriented (`{"col": [...], ...}`). These are unwrapped into normal rows.
+  Previously this showed up as *No row produced a valid sample*.
+
+If `indibench check X` still fails:
 
 1. Run `indibench inspect X` to see the features the loader actually returns.
 2. Copy the spec from `indibench/tasks/specs/*.yaml` into your own task file under the **same name**
@@ -263,8 +292,10 @@ refuse script-based repositories. If `indibench check X` fails:
 
 Each spec has a `status:` line. MILU, IndicQA, IndicSentiment, IndicXNLI, IN22-Conv and CVQA column
 names were checked against their dataset cards. The other benchmarks use their widely used Hub
-schemas. The raw-file paths for IndicXNLI and IndicSentiment were inferred from the repository
-layout, so run `indibench check indic_text -l ta` once on your machine. Scores from this harness use
+schemas. The IndicXNLI raw-file layout (`forward/test/xnli_<iso>.json`, a single-key JSON object)
+was checked against the repository and its original loading script. XL-Sum is read from the Hub's
+auto-converted Parquet. The IndicSentiment raw-file path is inferred from the repository layout, so
+run `indibench check indic_text -l ta` once on your machine. Scores from this harness use
 its own prompts and parsers. Compare models *within* indibench rather than against numbers from
 papers.
 

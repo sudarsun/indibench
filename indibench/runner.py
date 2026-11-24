@@ -86,9 +86,10 @@ class Evaluator:
         self.registry = TaskRegistry(cfg.run.task_files)
         self.model = model
         self.languages = expand_language_filter(cfg.run.languages)
-        self.task_names = self.registry.resolve(cfg.run.tasks, self.languages)
+        self.task_names = self.registry.resolve(cfg.run.tasks, self.languages,
+                                                modalities=cfg.run.modalities, exclude=cfg.run.exclude)
         if not self.task_names:
-            raise ValueError("No tasks selected (check run.tasks / --languages)")
+            raise ValueError("No tasks selected (check run.tasks / --languages / --modality / --exclude)")
         name = cfg.run.run_name or self._default_run_name()
         self.run_dir = os.path.join(cfg.run.output_dir, name)
 
@@ -116,6 +117,11 @@ class Evaluator:
             t0 = time.time()
             self.model = load_model(cfg.model)
             log.info("Model ready in %.1fs", time.time() - t0)
+        if not self.model.supports_images:
+            vision = [n for n in self.task_names if self.registry.specs[n].get("modality") == "image"]
+            if vision:
+                log.warning("Model is text-only: skipping %d vision task(s): %s", len(vision), ", ".join(vision))
+                self.task_names = [n for n in self.task_names if n not in vision]
 
         results: Dict[str, Any] = {}
         t_start = time.time()

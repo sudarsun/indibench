@@ -22,6 +22,19 @@ _EXPAND_KEYS = ("name", "dataset", "fields", "tags", "source_lang", "target_lang
                 "text_source", "vars", "description", "answer_map", "fewshot_split", "family")
 
 
+_IMAGE_TYPES = {"mmmu", "mathvista", "synthetic_ocr"}
+
+
+def spec_modality(spec: Dict[str, Any]) -> str:
+    """``image`` if the task feeds images to the model, else ``text`` (decided from the spec alone)."""
+    if spec.get("modality"):
+        return spec["modality"]
+    f = spec.get("fields") or {}
+    if spec.get("type") in _IMAGE_TYPES or f.get("image") or f.get("images"):
+        return "image"
+    return "text"
+
+
 class TaskRegistry:
     def __init__(self, extra_files: Optional[List[str]] = None):
         self.specs: Dict[str, Dict[str, Any]] = {}
@@ -37,6 +50,7 @@ class TaskRegistry:
         for raw in data.get("tasks", []):
             for spec in expand_spec(raw):
                 spec["_source"] = os.path.basename(path)
+                spec["modality"] = spec_modality(spec)
                 if spec["name"] in self.specs and self.specs[spec["name"]]["_source"] != spec["_source"]:
                     log.info("Task %s from %s overrides built-in", spec["name"], path)
                 self.specs[spec["name"]] = spec
@@ -48,8 +62,13 @@ class TaskRegistry:
                 self.groups[gname] = list(g)
 
     def resolve(self, patterns: List[str], languages: Optional[List[str]] = None,
-                _seen: Optional[set] = None) -> List[str]:
-        """Expand task names, globs (``belebele_*``) and groups into an ordered list."""
+                _seen: Optional[set] = None, modalities: Optional[List[str]] = None,
+                exclude: Optional[List[str]] = None) -> List[str]:
+        """Expand task names, globs (``belebele_*``) and groups into an ordered list.
+
+        ``modalities`` keeps only tasks of those modalities (``text`` / ``image``);
+        ``exclude`` drops tasks matching any of the given names, globs, tags or groups.
+        """
         seen = _seen if _seen is not None else set()
         out: List[str] = []
         for p in patterns:
@@ -69,7 +88,23 @@ class TaskRegistry:
         out = list(dict.fromkeys(out))
         if languages:
             out = [n for n in out if self.specs[n].get("lang") in (None, *languages)]
+        if modalities and "all" not in modalities:
+            out = [n for n in out if self.specs[n].get("modality", "text") in modalities]
+        if exclude:
+            out = [n for n in out if not self._excluded(n, exclude)]
         return out
+
+    def _excluded(self, name: str, patterns: List[str]) -> bool:
+        tags = set(self.specs[name].get("tags") or [])
+        for p in patterns:
+            p = p.strip()
+            if not p:
+                continue
+            if fnmatch.fnmatchcase(name, p) or p in tags:
+                return True
+            if p in self.groups and name in self.resolve([p]):
+                return True
+        return False
 
     def get(self, name: str) -> Dict[str, Any]:
         if name not in self.specs:

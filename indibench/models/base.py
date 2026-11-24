@@ -62,6 +62,13 @@ class BaseModel:
 
 
 def load_model(cfg: ModelConfig) -> BaseModel:
+    model = _load(cfg)
+    if cfg.supports_images is not None:      # user override wins over auto-detection
+        model.supports_images = bool(cfg.supports_images)
+    return model
+
+
+def _load(cfg: ModelConfig) -> BaseModel:
     b = cfg.backend
     if b == "hf":
         from indibench.models.hf import HFModel
