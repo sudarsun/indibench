@@ -142,7 +142,16 @@ class Evaluator:
                                  "lang": spec.get("lang")}
             self._write(results, env, time.time() - t_start)
         self._write(results, env, time.time() - t_start)
-        return self._payload(results, env, time.time() - t_start)
+        payload = self._payload(results, env, time.time() - t_start)
+        if cfg.run.executive_summary:
+            try:
+                from indibench.summary import write_executive_summary
+
+                path = write_executive_summary(payload, self.run_dir)
+                log.info("Executive summary: %s", path)
+            except Exception as e:  # never fail a finished run because of the report
+                log.warning("Could not build executive summary: %s", e)
+        return payload
 
     def _payload(self, results, env, elapsed) -> Dict[str, Any]:
         return {"model": self.model.info() if self.model else {"name": self.cfg.model.name_or_path},
@@ -260,6 +269,10 @@ class Evaluator:
         }
         if task.group_by and not task.predict_only:
             out["breakdown"] = self._breakdown(task, records, primary)
+        nch = [r["n_choices"] for r in records if r.get("n_choices")]
+        if nch and primary in ("accuracy",):
+            out["chance"] = round(100.0 * sum(1.0 / n for n in nch) / len(nch), 2)   # random-guess baseline
+        out["description"] = (task.spec.get("description") or "").strip()
         if metrics.get(primary):
             pm = metrics[primary]
             ci = f" [{pm['ci_low']:.1f}, {pm['ci_high']:.1f}]" if pm.get("ci_low") is not None else ""
@@ -287,8 +300,11 @@ class Evaluator:
         out = []
         for d, r, resp, (pred, mets) in zip(docs, reqs, responses, scored):
             prompt_text = "\n".join(p["text"] for p in r.messages[-1]["content"] if p.get("type") == "text")
-            out.append({"id": d.id, "prompt": prompt_text, "n_images": len(r.images), "response": resp,
-                        "pred": pred, "gold": task.gold_repr(d), "metrics": mets, "group": d.group})
+            rec = {"id": d.id, "prompt": prompt_text, "n_images": len(r.images), "response": resp,
+                   "pred": pred, "gold": task.gold_repr(d), "metrics": mets, "group": d.group}
+            if d.choices:
+                rec["n_choices"] = len(d.choices)
+            out.append(rec)
         return out
 
     def _breakdown(self, task: Task, records: List[Dict[str, Any]], primary: str) -> Dict[str, Any]:

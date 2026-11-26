@@ -240,7 +240,7 @@ PY="$REPO_DIR/$VENV/bin/python"
 # ------------------------------------------------------------------ 5. PyTorch + indibench
 log "Installing PyTorch (CUDA 13 wheels from PyPI) and indibench[hf,quant,dev]"
 uv pip install --python "$PY" torch torchvision
-uv pip install --python "$PY" -e ".[hf,quant,api,dev]" fonttools
+uv pip install --python "$PY" -e ".[hf,quant,api,dev,math]" fonttools
 
 if [[ "$FLASH_ATTN" == "auto" ]]; then
   if (( CC_MAJOR >= 8 )); then FLASH_ATTN=yes; else FLASH_ATTN=no; fi

@@ -55,3 +55,21 @@ tasks:
       filter: {Subset: "('{Name}', 'India')"}
     group_by: Category
     fields: {id: ID, image: image, question: Question, choices: Options, answer: Label, answer_format: index0}
+
+  - name: drishtikon_{lang}
+    type: mcq
+    description: >-
+      DRISHTIKON (EMNLP 2025) — image-grounded MCQ on Indian culture across all 28 states and 8 UTs
+      (festivals, attire, cuisine, art, architecture, regional practice).
+    languages: [en, hi, ta, te, bn, mr, kn, ml, gu, pa, or, as, ur]
+    tags: [indic, vision, culture, indian_english]
+    status: >-
+      columns verified (question, option1-4, answer = option text, state, attribute, question_type);
+      single train split filtered by `language`; the Hub copy may not contain every language
+    dataset:
+      path: Vipashyana/DRISHTIKON
+      split: train
+      filter: {language: ["{Name}", "{native}", "{iso}"]}
+    group_by: [attribute, state]
+    fields: {image: image, question: question, choices: [option1, option2, option3, option4],
+             answer: answer, answer_format: text}

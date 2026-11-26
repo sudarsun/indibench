@@ -32,6 +32,50 @@ groups:
     description: Smoke suite — a handful of fast tasks; pair with --limit 50.
     tasks: [belebele_ta, belebele_en, indicsentiment_ta, synth_ocr_ta, pope_xl_ta, pope, ai2d, chartqa]
 
+  # ---------------------------------------------------------------- additional Indic suites
+  indic_knowledge:
+    description: Knowledge MCQ across Indic languages (MILU, INCLUDE, MMLU/ARC/TriviaQA/BoolQ-Indic).
+    tasks: ["milu_*", "include_*", "mmlu_indic_*", "indicmmlu_pro_*", "global_mmlu_*", "arc_indic_*",
+            "triviaqa_indic_mcq_*", "boolq_indic_*"]
+  indicgenbench:
+    description: Google IndicGenBench generation tasks (XQuAD-IN, CrossSum-IN, Flores-IN).
+    tasks: ["xquad_in_*", "crosssum_in_*", "flores_in_en-*"]
+  tamil_extended:
+    description: The tamil suite plus every additional Tamil benchmark.
+    tasks: [tamil, include_ta, mmlu_indic_ta, indicmmlu_pro_ta, arc_indic_ta, triviaqa_indic_mcq_ta,
+            boolq_indic_ta, xquad_in_ta, crosssum_in_ta, flores_in_en-ta, tanglish_sentiment,
+            offensive_codemix_ta, drishtikon_ta]
+
+  # ---------------------------------------------------------------- English / domains
+  indian_english:
+    description: English benchmarks sourced from India (MILU-en, NEET/AIIMS, IIT-JEE, Indic TriviaQA-en, Tanglish).
+    tasks: [milu_en, triviaqa_indic_mcq_en, global_mmlu_en, medmcqa, jeebench, tanglish_sentiment,
+            drishtikon_en]
+  english_core:
+    description: General English knowledge & reasoning.
+    tasks: [mmlu_en, mmlu_pro, arc_challenge, hellaswag, winogrande, truthfulqa_mc1, gpqa_diamond, ifeval]
+  math:
+    description: Math word problems to olympiad level (GSM8K, MATH-500, AIME 24, MGSM, JEE maths).
+    tasks: [gsm8k, math500, aime24, "mgsm_*", jeebench]
+  science:
+    description: Science & medicine (GPQA, ARC, MedMCQA, JEEBench, MMLU-Pro, ARC-Indic).
+    tasks: [gpqa_diamond, arc_challenge, medmcqa, jeebench, mmlu_pro, "arc_indic_*"]
+  code:
+    description: Programming (HumanEval, MBPP) — requires --allow-code-execution.
+    tasks: [humaneval, mbpp]
+  stem:
+    description: math + science + code.
+    tasks: [math, science, code]
+
+  indian_culture:
+    description: Indian cultural knowledge, text and image (MILU, INCLUDE, DRISHTIKON, Global-MMLU culture-sensitive).
+    tasks: ["milu_*", "include_*", "drishtikon_*", "global_mmlu_*"]
+  safety:
+    description: Truthfulness, hallucination, instruction following and code-mixed content moderation.
+    tasks: [truthfulqa_mc1, pope, ifeval, "offensive_codemix_*"]
+
   full:
-    description: Everything except predict-only tasks.
-    tasks: [indic_text, indic_vision, vision_core, mmlu_en, xlsum_ta, flores_ta-en]
+    description: Everything except predict-only and code-execution tasks.
+    tasks: [indic_text, indic_vision, vision_core, mmlu_en, xlsum_ta, flores_ta-en,
+            indic_knowledge, indicgenbench, indian_english, english_core, math, science,
+            indian_culture, safety]

@@ -31,6 +31,8 @@ tasks:
     tags: [indic, knowledge, culture, text]
     status: schema verified (gated — accept terms on HF + set HF_TOKEN)
     dataset: {path: ai4bharat/MILU, data_dir: "{Name}", split: test}
+    per_language:
+      en: {tags: [indian_english, english, knowledge, text]}
     fewshot_split: validation
     group_by: [domain, subject]
     fields:

@@ -24,7 +24,7 @@ from indibench.metrics import scores as M
 from indibench.metrics.extract import extract_choice, letters
 from indibench.models.base import Request
 from indibench.tasks import prompts as P
-from indibench.utils import SafeDict, resize_to_budget, to_pil
+from indibench.utils import SafeDict, resize_to_budget, safe_format, to_pil
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +74,8 @@ def _as_list(v: Any) -> List[Any]:
     if v is None:
         return []
     if isinstance(v, (list, tuple)):
+        if v and all(isinstance(x, dict) and "text" in x for x in v):   # [{"text": ...}, ...] (XQuAD-IN)
+            return [x["text"] for x in v]
         return list(v)
     if isinstance(v, dict) and "text" in v:
         return _as_list(v["text"])
@@ -219,7 +221,7 @@ class Task:
         v.update(doc.vars)
         lab = P.labels(self.prompt_lang, self.instruction_lang)
         v.update({f"L_{k}": val for k, val in lab.items()})
-        return self.template().format_map(SafeDict(v)).strip()
+        return safe_format(self.template(), v).strip()
 
     def gold_text(self, doc: Doc) -> str:
         """Assistant turn used for few-shot demonstrations."""
@@ -303,17 +305,29 @@ class MultipleChoiceTask(Task):
         spec = self.fields.get("choices")
         if isinstance(spec, list):
             vals = [_get(row, c) for c in spec]
-            return [str(v) for v in vals if v is not None and str(v).strip() not in ("", "nan", "None")]
-        return [str(c) for c in _as_list(_get(row, spec))]
+            out = [str(v) for v in vals if v is not None and str(v).strip() not in ("", "nan", "None")]
+        else:
+            out = [str(c) for c in _as_list(_get(row, spec))]
+        if len(out) < 2 and self.fields.get("choices_fallback"):   # schema changed between dataset versions
+            out = [str(c) for c in _as_list(_get(row, self.fields["choices_fallback"]))]
+        return out
 
-    def _resolve_answer(self, val: Any, choices: List[str]) -> Optional[int]:
+    def _resolve_answer(self, val: Any, choices: List[str], row: Optional[Dict[str, Any]] = None) -> Optional[int]:
         fmt = self.fields.get("answer_format", "auto")
         if val is None:
             return None
+        if fmt == "onehot":                       # e.g. TruthfulQA mc1_targets.labels = [1, 0, 0, ...]
+            seq = list(val) if isinstance(val, (list, tuple)) else []
+            return seq.index(1) if 1 in seq else None
+        if fmt == "label":                        # e.g. ARC answerKey "C" looked up in choices.label
+            labels = [str(x).strip() for x in _as_list(_get(row or {}, self.fields.get("choice_labels")))]
+            s = str(val).strip()
+            return labels.index(s) if s in labels else None
         s = str(val).strip()
         mapping = self.spec.get("answer_map")
         if mapping:
-            s = str(mapping.get(val, mapping.get(s, s)))
+            low = {str(k).lower(): v for k, v in mapping.items()}
+            s = str(mapping.get(val, low.get(s.lower(), s)))
             fmt = "text" if not s.lstrip("-").isdigit() else "index0"
         try:
             if fmt == "index0":
@@ -343,17 +357,32 @@ class MultipleChoiceTask(Task):
         choices = self._choices(row)
         if len(choices) < 2:
             return None
-        gold = self._resolve_answer(_get(row, self.fields.get("answer")), choices)
+        if "gold_index" in self.spec:        # answer is always a fixed column (GPQA: "Correct Answer")
+            gold: Optional[int] = int(self.spec["gold_index"])
+        else:
+            gold = self._resolve_answer(_get(row, self.fields.get("answer")), choices, row)
         if gold is not None and gold < 0:     # e.g. hidden test labels (-1)
             gold = None
         if gold is None and not self.predict_only:
             return None
         if gold is not None and not (0 <= gold < len(choices)):
             return None
+        if self.spec.get("shuffle_choices"):
+            # Datasets that list the correct answer first (GPQA, TruthfulQA) are shuffled
+            # deterministically per document so position carries no signal.
+            import hashlib
+            import random as _random
+
+            seed = int(hashlib.md5(f"{self.run.seed}:{self.doc_id(row, idx)}".encode()).hexdigest()[:8], 16)
+            order = list(range(len(choices)))
+            _random.Random(seed).shuffle(order)
+            choices = [choices[i] for i in order]
+            gold = order.index(gold) if gold is not None else None
         L = letters(len(choices))
         v: Dict[str, Any] = {}
         for k, col in self.fields.items():
-            if k in ("choices", "answer", "answer_format", "image", "images", "id"):
+            if k in ("choices", "answer", "answer_format", "image", "images", "id", "choices_fallback",
+                     "choice_labels"):
                 continue
             if isinstance(col, str):
                 v[k] = self._truncate(_get(row, col))
@@ -553,6 +582,8 @@ class GenerationTask(Task):
 
 
 def build_task(spec: Dict[str, Any], run: RunConfig, image_cfg: ImageConfig) -> Task:
+    import indibench.tasks.ifeval  # noqa: F401  (registers ifeval)
+    import indibench.tasks.reasoning  # noqa: F401  (registers math / code / jeebench)
     import indibench.tasks.special  # noqa: F401  (registers special types)
 
     t = spec.get("type")

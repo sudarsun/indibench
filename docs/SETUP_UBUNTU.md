@@ -216,7 +216,7 @@ cd indibench
 uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install torch torchvision                          # PyPI wheels = CUDA 13.x
-uv pip install -e ".[hf,quant,api,dev]" fonttools
+uv pip install -e ".[hf,quant,api,dev,math]" fonttools
 ```
 
 FlashAttention-2 works on **RTX 3090/4090, L40S, A100, H100 and H200**; skip it on a 2080 Ti:

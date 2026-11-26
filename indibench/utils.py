@@ -112,10 +112,27 @@ class SafeDict(dict):
         return "{" + key + "}"
 
 
+_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def safe_format(template: str, variables: Dict[str, Any]) -> str:
+    """Fill ``{name}`` placeholders only.
+
+    Unlike ``str.format`` this leaves every other brace untouched, so templates may contain
+    LaTeX (``\\boxed{}``, ``\\frac{a}{b}``), JSON or code, and unknown names stay as written.
+    """
+    def sub(m):
+        k = m.group(1)
+        return str(variables[k]) if k in variables and variables[k] is not None else \
+            ("" if k in variables else m.group(0))
+
+    return _PLACEHOLDER.sub(sub, template)
+
+
 def fmt(template: Any, variables: Dict[str, Any]) -> Any:
     """Recursively format strings inside nested lists/dicts with ``variables``."""
     if isinstance(template, str):
-        return template.format_map(SafeDict(variables))
+        return safe_format(template, variables)
     if isinstance(template, list):
         return [fmt(t, variables) for t in template]
     if isinstance(template, dict):

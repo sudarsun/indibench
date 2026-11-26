@@ -1,0 +1,162 @@
+# English benchmarks: Indian-English / India-sourced exams, general reasoning & knowledge,
+# math, science and programming.
+
+tasks:
+  # ------------------------------------------------------------------ Indian English (India-sourced)
+  - name: medmcqa
+    type: mcq
+    description: MedMCQA — AIIMS & NEET-PG medical entrance MCQs (validation = NEET-PG; test labels hidden).
+    tags: [indian_english, medical, science, exams, text]
+    status: columns verified (opa..opd, cop ClassLabel a-d)
+    dataset: {path: openlifescienceai/medmcqa, split: validation}
+    group_by: subject_name
+    fields: {id: id, question: question, choices: [opa, opb, opc, opd], answer: cop, answer_format: index0}
+
+  - name: jeebench
+    type: jeebench
+    description: >-
+      JEEBench — 515 IIT-JEE Advanced problems (physics, chemistry, maths): single/multi-correct MCQ,
+      integer and numeric answers, scored with the paper's partial-credit rules.
+    tags: [indian_english, science, math, reasoning, exams, text]
+    status: columns verified (subject, description, gold, index, type, question)
+    dataset: {path: daman1209arora/jeebench, split: test}
+    group_by: [subject, type]
+    max_new_tokens: 2048
+
+  # ------------------------------------------------------------------ general knowledge & reasoning
+  - name: mmlu_pro
+    type: mcq
+    description: MMLU-Pro — harder 10-option MMLU successor across 14 disciplines.
+    tags: [english, knowledge, reasoning, science, text]
+    status: columns verified (options list, answer_index, category)
+    dataset: {path: TIGER-Lab/MMLU-Pro, split: test}
+    fewshot_split: validation
+    group_by: category
+    fields: {id: question_id, question: question, choices: options, answer: answer_index, answer_format: index0}
+
+  - name: gpqa_diamond
+    type: mcq
+    description: GPQA Diamond — 198 graduate-level "Google-proof" biology/physics/chemistry questions (gated).
+    tags: [english, science, reasoning, text]
+    status: "well-known schema (gated - accept terms + HF_TOKEN); choices shuffled deterministically"
+    dataset: {path: Idavidrein/gpqa, name: gpqa_diamond, split: train}
+    group_by: "High-level domain"
+    gold_index: 0
+    shuffle_choices: true
+    fields:
+      question: Question
+      choices: ["Correct Answer", "Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"]
+
+  - name: arc_challenge
+    type: mcq
+    description: AI2 ARC-Challenge — grade-school science questions that defeat retrieval baselines.
+    tags: [english, science, reasoning, text]
+    status: well-known schema
+    dataset: {path: allenai/ai2_arc, name: ARC-Challenge, split: test}
+    fields: {id: id, question: question, choices: choices.text, choice_labels: choices.label,
+             answer: answerKey, answer_format: label}
+
+  - name: hellaswag
+    type: mcq
+    description: HellaSwag (validation) — commonsense sentence completion.
+    tags: [english, commonsense, reasoning, text]
+    status: well-known schema; legacy script -> auto parquet fallback
+    dataset: {path: Rowan/hellaswag, split: validation}
+    group_by: activity_label
+    fields: {ctx: ctx, choices: endings, answer: label, answer_format: index0}
+    prompt:
+      template: |-
+        Choose the most plausible continuation of the text.
+
+        {ctx}
+
+        {choices_block}
+        Answer with the option's letter from the given choices directly.
+
+  - name: winogrande
+    type: mcq
+    description: WinoGrande (XL, validation) — pronoun/commonsense resolution.
+    tags: [english, commonsense, reasoning, text]
+    status: well-known schema; legacy script -> auto parquet fallback
+    dataset: {path: allenai/winogrande, name: winogrande_xl, split: validation}
+    fields: {sentence: sentence, choices: [option1, option2], answer: answer, answer_format: index1}
+    prompt:
+      template: |-
+        Which option correctly fills the blank (_) in the sentence?
+
+        {sentence}
+
+        {choices_block}
+        Answer with the option's letter from the given choices directly.
+
+  - name: truthfulqa_mc1
+    type: mcq
+    description: TruthfulQA MC1 — resisting common misconceptions (single correct answer, shuffled).
+    tags: [english, truthfulness, safety, text]
+    status: well-known schema
+    dataset: {path: truthfulqa/truthful_qa, name: multiple_choice, split: validation}
+    shuffle_choices: true
+    fields: {question: question, choices: mc1_targets.choices, answer: mc1_targets.labels, answer_format: onehot}
+
+  # ------------------------------------------------------------------ math
+  - name: gsm8k
+    type: math
+    description: GSM8K — grade-school math word problems (chain-of-thought, final-answer match).
+    tags: [english, math, reasoning, text]
+    status: well-known schema
+    dataset: {path: openai/gsm8k, name: main, split: test}
+    answer_after: "####"
+    fields: {question: question, answer: answer}
+    max_new_tokens: 768
+
+  - name: math500
+    type: math
+    description: MATH-500 — competition math subset (levels 1-5, 7 subjects), LaTeX answer equivalence.
+    tags: [english, math, reasoning, text]
+    status: columns verified (problem, answer, subject, level)
+    dataset: {path: HuggingFaceH4/MATH-500, split: test}
+    group_by: [subject, level]
+    fields: {id: unique_id, question: problem, answer: answer}
+    max_new_tokens: 2048
+
+  - name: aime24
+    type: math
+    description: AIME 2024 — 30 olympiad-level problems with integer answers (expect long reasoning).
+    tags: [english, math, reasoning, olympiad, text]
+    status: columns seen on mirror (ID, Problem, Answer); either case accepted
+    dataset: {path: Maxwell-Jia/AIME_2024, split: train}
+    fields: {id: "ID|id", question: "Problem|problem", answer: "Answer|answer"}
+    max_new_tokens: 4096
+
+  # ------------------------------------------------------------------ programming (opt-in execution)
+  - name: humaneval
+    type: code
+    subtype: humaneval
+    description: HumanEval — 164 Python function-synthesis problems, pass@1 by executing unit tests.
+    tags: [english, code, programming, text]
+    status: well-known schema; requires --allow-code-execution
+    dataset: {path: openai/openai_humaneval, split: test}
+    fields: {id: task_id, prompt: prompt, test: test, entry_point: entry_point}
+    max_new_tokens: 768
+
+  - name: mbpp
+    type: code
+    subtype: mbpp
+    description: MBPP (sanitized) — 427 basic Python programming tasks, pass@1 by executing asserts.
+    tags: [english, code, programming, text]
+    status: columns verified (prompt, code, test_imports, test_list); requires --allow-code-execution
+    dataset: {path: google-research-datasets/mbpp, name: sanitized, split: test}
+    fields: {id: task_id, prompt: prompt, tests: test_list, imports: test_imports}
+    max_new_tokens: 768
+
+  # ------------------------------------------------------------------ instruction following
+  - name: ifeval
+    type: ifeval
+    description: >-
+      IFEval — 541 prompts with verifiable formatting/length/keyword constraints (e.g. "at least 300
+      words", "no commas", "wrap in JSON"). Scored by deterministic checkers, no judge model.
+    tags: [english, instruction_following, text]
+    status: columns verified (key, prompt, instruction_id_list, kwargs)
+    dataset: {path: google/IFEval, split: train}
+    fields: {id: key, prompt: prompt}
+    max_new_tokens: 1280

@@ -7,10 +7,21 @@ GPU**:
 * **Workstation cards:** RTX 2080 Ti (11 GB), RTX 3090 or RTX 4090 (24 GB).
 * **Data-center cards:** L40S (48 GB), A100 (40/80 GB), H100 (80/94 GB) or H200 (141 GB).
 
-* **25 task specs, expanded to 149 tasks.** Belebele, MILU, IndicSentiment, IndicXNLI, IndicQA, FLORES+,
-  IN22-Conv, XL-Sum, MMMU, MathVista, ChartQA, DocVQA, TextVQA, OCRBench, AI2D, ScienceQA, MMBench,
-  POPE, MME, CVQA. There are also two Indic vision probes of our own: synthetic Indic-script OCR and
-  a cross-lingual POPE.
+* **53 task specs, expanded to 280 tasks.** They fall into five areas:
+  * **Indic text:** Belebele, MILU, INCLUDE, MMLU-Indic, IndicMMLU-Pro, Global-MMLU,
+    ARC/TriviaQA/BoolQ-Indic, IndicSentiment, IndicXNLI, IndicQA, IndicGenBench (XQuAD-IN,
+    CrossSum-IN, Flores-IN), FLORES+, IN22-Conv, XL-Sum, MGSM, Tanglish sentiment, and Dravidian
+    code-mixed offensive-language detection.
+  * **Indian English:** MILU-en, MedMCQA (AIIMS/NEET-PG), JEEBench (IIT-JEE Advanced),
+    TriviaQA-Indic-en, Global-MMLU-en and DRISHTIKON-en.
+  * **General English:** MMLU, MMLU-Pro, GPQA-Diamond, ARC-Challenge, HellaSwag, WinoGrande,
+    TruthfulQA and **IFEval**.
+  * **Math and code:** GSM8K, MATH-500, AIME-24, HumanEval and MBPP.
+  * **Vision:** MMMU, MathVista, ChartQA, DocVQA, TextVQA, OCRBench, AI2D, ScienceQA, MMBench,
+    POPE, MME, CVQA and **DRISHTIKON** (Indian culture from images), plus Indic-script OCR and
+    cross-lingual POPE probes of our own.
+* **A one-page executive summary for business readers** is written after every run, and can also be
+  produced from any finished run (§8a).
 * **You choose how many samples to run.** Use `--limit 200`, `--limit 0.1` or `--limit all`. Sampling
   is deterministic (seeded) and can be *stratified* so that small runs still cover every MILU subject.
 * **Four backends.** `hf` (transformers, with optional 4/8-bit), `vllm` (highest throughput),
@@ -74,6 +85,9 @@ indibench run -b vllm -m google/gemma-3-12b-it -t indic_text -l dravidian -n 300
 # From YAML, overriding a few keys
 indibench run -c configs/tamil_l40s_hf.yaml -n 50 --set model.quantization=4bit
 
+# Indian-English + STEM for a text model (code needs explicit opt-in)
+indibench run -m Qwen/Qwen3-8B -t indian_english,math,science,code --allow-code-execution -n 200
+
 # Text-only LLM: skip every vision task (OCR, POPE, MMMU, ...) in whatever suites you select
 indibench run -m sarvamai/sarvam-m -t tamil,indic_text -l ta --text-only -n 200
 indibench run -m my-llm -t full -x 'vision,xlsum_*'     # or exclude by tag / glob / group
@@ -95,6 +109,7 @@ caps the samples per task.
 | `check TASKS` | Load a few rows of each task and parse them. Use it to catch gated or broken datasets before a long GPU run. |
 | `report RUN_DIR` | Re-render `report.md` / `summary.csv`. |
 | `compare RUN...` | Side-by-side primary metrics with deltas. |
+| `summary RUN [--baseline RUN] [--pdf]` | One-page executive summary (HTML, PDF or Markdown) for business readers. |
 | `env [-m MODEL] [--quantization 4bit]` | GPU capabilities (bf16 / FA2 / FP8), driver, auto profile and a memory-fit verdict for a model. |
 | `init-config PATH` | Write an annotated example YAML. |
 
@@ -147,10 +162,56 @@ example `belebele_ta` and `flores_en-ta`.
 extraction), `chartqa` (relaxed accuracy), `docvqa_val` (ANLS), `textvqa_val` (VQA soft accuracy),
 `ocrbench`, `ai2d`, `scienceqa_img`, `mmbench_en_dev`, `pope`, `mme`.
 
-### Suites
-`tamil`, `tamil_text`, `tamil_vision`, `tamil_open` (needs no gated access), `indic_text`,
-`indic_vision`, `vision_core`, `quick`, `full`. Combine a suite with `--languages ta,hi`, `indic`,
-`indic_major`, `dravidian` or `indo_aryan`.
+### More Indic knowledge & generation
+| family | what it measures | metrics | languages |
+|---|---|---|---|
+| `include_*` | INCLUDE: questions from **real regional exams written in the language** (not translated) | accuracy, per-domain | ta, te, ml, hi, bn, ur, ne |
+| `mmlu_indic_*`, `arc_indic_*`, `boolq_indic_*` | MMLU / ARC-Challenge / BoolQ translated by Sarvam AI | accuracy | 10 Indic |
+| `triviaqa_indic_mcq_*` | TriviaQA as 4-way MCQ (Sarvam AI) | accuracy | 10 Indic + en |
+| `xquad_in_*` | IndicGenBench XQuAD-IN extractive QA | EM, F1, char-F1 | 12 |
+| `crosssum_in_*` | IndicGenBench: English article → summary in the Indic language | chrF++, ROUGE-L, script fidelity | 12 |
+| `flores_in_en-*` | IndicGenBench Flores-IN translation (**not gated**, unlike FLORES+) | chrF++, BLEU | 12 |
+| `mgsm_*` | MGSM human-translated grade-school math | accuracy | te, bn, en |
+| `tanglish_sentiment` | Tamil-English code-mixed (mostly romanised) YouTube comments | accuracy, macro-F1 | ta-en |
+| `offensive_codemix_*` | offensive-content detection on code-mixed comments (moderation) | accuracy, macro-F1 | ta, ml, kn |
+| `indicmmlu_pro_*` | MMLU-Pro (10 options) translated with IndicTrans2 and expert-checked | accuracy, per category | 9 incl. ta |
+| `global_mmlu_*` | MMLU with a per-question culturally sensitive / agnostic label | accuracy, per label | hi, bn, te, en |
+| `drishtikon_*` | Indian culture from **images**, covering all states and UTs (festivals, attire, cuisine, art) | accuracy, per attribute and state | en + Indic |
+
+### Indian English, general English, math, science, code
+| task | what it measures | scoring |
+|---|---|---|
+| `medmcqa` | AIIMS and NEET-PG medical entrance questions | accuracy, per subject |
+| `jeebench` | IIT-JEE Advanced physics, chemistry and maths | JEEBench rules: exact for single-correct and integer answers, ±0.01 for numeric, 0.25 per option for partially correct multi-answer |
+| `milu_en`, `triviaqa_indic_mcq_en` | India-centric knowledge in English | accuracy |
+| `mmlu_pro`, `mmlu_en` | broad knowledge and reasoning (MMLU-Pro has 10 options) | accuracy, per category |
+| `gpqa_diamond` | graduate-level science (gated); the correct answer is listed first in the data, so choices are shuffled deterministically | accuracy |
+| `arc_challenge`, `hellaswag`, `winogrande`, `truthfulqa_mc1` | science reasoning, commonsense, truthfulness | accuracy |
+| `gsm8k`, `math500`, `aime24` | math word problems up to olympiad level | final answer from `\boxed{}`, `####` or "The answer is", checked by normalised-LaTeX, numeric or SymPy equivalence |
+| `humaneval`, `mbpp` | Python function synthesis | pass@1, by **executing unit tests** (opt-in, see below) |
+| `ifeval` | following verifiable instructions ("≥ 300 words", "no commas", "answer in JSON", "end with …") | prompt- and instruction-level accuracy, strict and loose, from 25 built-in checkers with no judge model |
+
+**Code execution is opt-in.** HumanEval and MBPP run the code the model writes. They refuse to start
+unless you pass `--allow-code-execution` (or set `run.allow_code_execution: true`, or
+`INDIBENCH_ALLOW_CODE_EXECUTION=1`). Each program runs in a fresh `python -I` process inside a temp
+directory, with an empty environment, a timeout, and CPU, memory and file-size limits. That limits
+damage but is not a security sandbox: run code benchmarks inside a container or VM.
+
+Math and JEE tasks expect step-by-step reasoning, so their `max_new_tokens` defaults are large
+(768–4096). Expect them to dominate run time, and use vLLM if you can.
+
+### Suites and tags
+* **Tamil:** `tamil`, `tamil_text`, `tamil_vision`, `tamil_open` (needs no gated access) and
+  **`tamil_extended`** (everything Tamil).
+* **Indic:** `indic_text`, `indic_vision`, `indic_knowledge`, `indicgenbench`.
+* **English and domains:** `indian_english`, `english_core`, `math`, `science`, `code`, `stem`,
+  **`indian_culture`** and **`safety`**.
+* **Other:** `vision_core`, `quick` and `full`. `full` covers everything except predict-only and
+  code tasks.
+
+Any task tag can also be selected with `-t tag:<tag>`, for example `-t tag:indian_english`,
+`-t tag:medical` or `-t tag:exams`. Combine suites with `--languages ta,hi`, `indic`, `indic_major`,
+`dravidian` or `indo_aryan`.
 
 ## 6. Why the Indic-specific metrics matter
 
@@ -218,6 +279,46 @@ indibench run -c configs/rtx2080ti_hf.yaml        # one config per GPU class: rt
 * For reasoning models, use `--disable-thinking` or raise `--max-new-tokens`. `<think>` blocks are
   stripped before scoring.
 
+## 8a. Executive summary for business readers
+
+Every run writes `executive_summary.html` to its run folder. This is a single A4 page meant for
+people who will never open `results.json`. You can also build one from any finished run, optionally
+comparing it against another run:
+
+```bash
+indibench summary results/<run>                                # HTML in the run folder
+indibench summary results/<run> --baseline results/<other_run> --pdf
+indibench summary results/<run> --format md                    # paste into email / Confluence
+indibench summary results/<run> --narrative-model <model> --narrative-api-base http://localhost:8000/v1
+```
+
+The page contains:
+
+* **Headline KPIs:** overall score, Tamil score, Tamil-vs-English parity on the same tests, and how
+  much evidence the scores rest on (number of tests, questions and the typical margin of error).
+* **A capability scorecard** with nine business areas: Tamil understanding, Tamil writing &
+  translation, other Indian languages, Indian context, English, math & science, programming,
+  vision & documents, and safety & reliability. Each area gets a 0–100 score, a rating (Strong,
+  Good, Limited or Weak) and a plain-language verdict ("Ready for production use", "Usable with
+  human review", "Pilot only", "Not recommended yet"). With `--baseline`, a Δ column shows the
+  change against the other run.
+* **Strengths, watch-outs and recommendations.** These are generated by rules from the numbers. For
+  example: Tamil text that keeps drifting into English, a Tamil-vs-English gap, areas not tested
+  in this run, or sample sizes too small for a final decision.
+
+How the scores are calculated:
+
+* **Skill scores** rescale multiple-choice accuracy so that random guessing scores 0 and a perfect
+  result scores 100. Without this, a 25% score on a 4-option test would look like partial success.
+* Error rates such as OCR CER are inverted. Other measures (chrF++, pass@1) are used as they are.
+* The page contains no AI-written text unless you pass `--narrative-model`. That option sends only
+  the computed scores to the model, and the resulting paragraph is labelled as AI-drafted.
+
+`--pdf` uses WeasyPrint or a headless Chrome/Chromium if one is installed. Otherwise, open the HTML
+and use Print → Save as PDF. Turn the automatic summary off with `--set run.executive_summary=false`.
+[`docs/sample_executive_summary.pdf`](docs/sample_executive_summary.pdf) shows the layout, using
+synthetic scores.
+
 ## 8. Outputs
 
 ```
@@ -228,6 +329,7 @@ results/<model>__<timestamp>/
   results.json           all metrics + CIs + breakdowns + timing + peak GPU memory
   summary.csv            one row per task
   report.md              tables, language matrix, per-group breakdowns
+  executive_summary.html one-page business summary (indibench summary … --pdf for a PDF)
 ```
 
 ## 9. Adding your own tasks
@@ -300,6 +402,13 @@ The loader copes with two common Hub problems automatically:
   `refs/convert/parquet` branch. It handles both file layouts used there
   (`<config>/<prefix>-<split>.parquet` and `<config>/<split>/NNNN.parquet`) and logs a warning.
   Set `dataset.parquet_fallback: false` to turn this off.
+* **Files in unknown folders.** `dataset.hub_files: {repo: org/name, pattern: "*english-ta_test.json"}`
+  lists the repository's files and loads whatever matches, whether it is at the root or in a
+  subfolder. IndicGenBench uses this.
+* **One table for all languages.** `filter: {"language|lang": [ta, Tamil]}` filters on the first of
+  those columns that exists. `config_fallback_filter` switches to such a filter when a per-language
+  config doesn't exist. A filter on a missing column fails with a list of the real columns. BoolQ-Indic
+  uses this.
 * **"Container" JSON files.** Some files hold one JSON object whose single key wraps all the rows
   (IndicXNLI), or are column-oriented (`{"col": [...], ...}`). These are unwrapped into normal rows.
   Previously this showed up as *No row produced a valid sample*.
@@ -325,6 +434,6 @@ papers.
 ## 11. Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]" sympy
 pytest -q        # offline tests: metrics, sampling, resume, GPU capability logic, dummy/openai/hf backends
 ```

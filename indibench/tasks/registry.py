@@ -81,6 +81,13 @@ class TaskRegistry:
                 seen.add(p)
                 out.extend(self.resolve(self.groups[p], languages, seen))
                 continue
+            if p.startswith("tag:"):           # tag:math, tag:indian_english ...
+                tag = p[4:]
+                matches = sorted(n for n, sp in self.specs.items() if tag in (sp.get("tags") or []))
+                if not matches:
+                    raise KeyError(f"No task has tag {tag!r}. Try `indibench list --tag ...`.")
+                out.extend(matches)
+                continue
             matches = [n for n in self.specs if fnmatch.fnmatchcase(n, p)]
             if not matches:
                 raise KeyError(f"No task or group matches {p!r}. Try `indibench list`.")

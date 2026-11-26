@@ -93,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skip every vision task (same as --modality text); use for text-only LLMs")
     g.add_argument("-x", "--exclude", dest="run.exclude", type=_csv,
                    help="drop tasks by name, glob, tag or group, e.g. 'vision,xlsum_*,mmlu_en'")
+    g.add_argument("--allow-code-execution", dest="run.allow_code_execution", action="store_const", const=True,
+                   help="enable code benchmarks (HumanEval/MBPP); they EXECUTE model output — use a container/VM")
     g.add_argument("-n", "--limit", dest="run.limit", type=_limit,
                    help="samples per task: N, a fraction like 0.1, or 'all'")
     g.add_argument("--sampling", dest="run.sampling", choices=["random", "first", "stratified"])
@@ -429,6 +431,7 @@ run:
   resume: true
   bootstrap: 1000
   task_files: []                # your own task YAMLs
+  allow_code_execution: false   # HumanEval/MBPP execute model-written code: enable only in a container/VM
   trust_remote_code: null       # datasets: run Hub loading scripts (only possible with datasets<4)
 """
 

@@ -25,7 +25,8 @@ quant = ["bitsandbytes>=0.43"]
 vllm = ["vllm>=0.6.4"]
 api = ["openai>=1.30"]
 dev = ["pytest>=7"]
-all = ["torch>=2.2", "transformers>=4.49", "accelerate>=0.30", "bitsandbytes>=0.43", "openai>=1.30", "pytest>=7"]
+math = ["sympy>=1.12"]   # symbolic answer equivalence for MATH-500 / AIME (optional)
+all = ["torch>=2.2", "transformers>=4.49", "accelerate>=0.30", "bitsandbytes>=0.43", "openai>=1.30", "pytest>=7", "sympy>=1.12"]
 
 [project.scripts]
 indibench = "indibench.cli:main"

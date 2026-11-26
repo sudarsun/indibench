@@ -1,0 +1,225 @@
+# Additional Indic benchmarks: native exam knowledge (INCLUDE), translated academic suites
+# (Sarvam indic-evals), Google's IndicGenBench generation tasks, Indic math (MGSM) and
+# Tamil-English code-mixed sentiment.
+
+tasks:
+  # ------------------------------------------------------------------ knowledge (native exams)
+  - name: include_{lang}
+    type: mcq
+    description: >-
+      INCLUDE (Cohere Labs) — questions from real regional academic & professional exams, written in
+      the language itself (not translated). Tamil: Tamil Nadu exam questions.
+    languages: [ta, te, ml, hi, bn, ur, ne]
+    tags: [indic, knowledge, culture, exams, text]
+    status: columns verified (question, option_a..d, answer int 0-3; config = language name)
+    dataset: {path: CohereLabs/include-base-44, name: "{Name}", split: test}
+    fewshot_split: validation
+    group_by: [domain, subject]
+    fields:
+      question: question
+      choices: [option_a, option_b, option_c, option_d]
+      choices_fallback: choices              # older revisions stored a `choices` list
+      answer: answer
+      answer_format: index0
+
+  # ------------------------------------------------------------------ translated academic suites (Sarvam)
+  - name: mmlu_indic_{lang}
+    type: mcq
+    description: MMLU translated into 10 Indic languages (Sarvam AI indic-evals).
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or]
+    tags: [indic, knowledge, translated, text]
+    status: columns verified (question, choices[4], answer int, language); config per ISO code
+    dataset:
+      path: sarvamai/mmlu-indic
+      name: "{iso}"
+      split: test
+      config_fallback_filter: {"language|lang": ["{iso}", "{Name}", "{name_lower}"]}
+    fewshot_split: validation
+    fields: {question: question, choices: choices, answer: answer, answer_format: index0}
+
+  - name: arc_indic_{lang}
+    type: mcq
+    description: ARC-Challenge (grade-school science) translated into Indic languages (Sarvam AI).
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or]
+    tags: [indic, science, reasoning, translated, text]
+    status: assumed same layout as sarvamai/mmlu-indic; also accepts the original ARC layout
+    dataset:
+      path: sarvamai/arc-challenge-indic
+      name: "{iso}"
+      split: test
+      config_fallback_filter: {"language|lang": ["{iso}", "{Name}", "{name_lower}"]}
+    fields: {question: question, choices: "choices", answer: "answer|answerKey", answer_format: auto}
+
+  - name: triviaqa_indic_mcq_{lang}
+    type: mcq
+    description: TriviaQA as 4-way MCQ in Indic languages and English (Sarvam AI).
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or, en]
+    tags: [indic, knowledge, world_knowledge, translated, text]
+    status: columns + configs + split verified (validation only)
+    dataset: {path: sarvamai/trivia-qa-indic-mcq, name: "{iso}", split: validation}
+    per_language:
+      en: {tags: [indian_english, english, knowledge, text]}
+    fields: {question: question, choices: choices, answer: answer, answer_format: index0}
+
+  - name: boolq_indic_{lang}
+    type: mcq
+    description: BoolQ yes/no reading comprehension translated into Indic languages (Sarvam AI).
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or]
+    tags: [indic, reading_comprehension, translated, text]
+    status: >-
+      ONE table for all languages (data/train-*, data/validation-*), filtered by its language column;
+      column names have alternatives — run `indibench check boolq_indic_ta` once
+    dataset:
+      path: sarvamai/boolq-indic
+      split: validation
+      filter: {"language|lang|lang_code": ["{iso}", "{Name}", "{name_lower}", "{native}", "{iso}-IN"]}
+    choices: ["Yes", "No"]
+    answer_map: {true: 0, false: 1, "yes": 0, "no": 1}
+    fields: {context: "passage|context|paragraph", question: "question|query", answer: "answer|label",
+             answer_format: text}
+
+  # ------------------------------------------------------------------ IndicGenBench (Google)
+  - name: xquad_in_{lang}
+    type: qa
+    description: XQuAD-IN (IndicGenBench) — human-translated XQuAD extractive QA.
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or, as, ur]
+    tags: [indic, qa, extractive, indicgenbench, text]
+    status: file naming from the official repo (xquad_<lang>_<split>.json, rows under "examples")
+    dataset:
+      hub_files: {repo: google/IndicGenBench_xquad_in, pattern: "*xquad_{iso}_test.json"}
+      format: json
+      json_field: examples
+      split: test
+    fields: {id: id, context: context, question: question, answers: answers}
+    metrics: [exact_match, f1, char_f1]
+    max_new_tokens: 48
+
+  - name: crosssum_in_{lang}
+    type: generation
+    subtype: summarization
+    description: CrossSum-IN (IndicGenBench) — English article -> summary written in the Indic language.
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or, as, ur]
+    tags: [indic, summarization, cross_lingual, indicgenbench, text]
+    status: >-
+      Hub files are crosssum_english-<lang>_<split>.json at the repo root (rows under "examples");
+      resolved by file-name pattern so either layout works
+    source_lang: en
+    target_lang: "{iso}"
+    dataset:
+      hub_files: {repo: google/IndicGenBench_crosssum_in, pattern: "*english-{iso}_test.json"}
+      format: json
+      json_field: examples
+      split: test
+    fields: {source: "text|source", target: "summary|target"}
+    metrics: [chrf, rouge_l, script_fidelity]
+    max_input_chars: 6000
+    max_new_tokens: 160
+    prompt:
+      template: "Summarize the following English article in {tgt_name}, in one or two sentences. Write only the summary.\n\n{source}"
+
+  - name: flores_in_en-{lang}
+    type: generation
+    family: flores_in_en2xx
+    description: Flores-IN (IndicGenBench) English -> Indic translation; NOT gated (alternative to FLORES+).
+    languages: [ta, te, kn, ml, hi, bn, mr, gu, pa, or, as, ur]
+    tags: [indic, translation, indicgenbench, text]
+    status: file naming from the official repo (flores_<src>_<tgt>_<split>.json; test = FLORES devtest)
+    source_lang: en
+    target_lang: "{iso}"
+    dataset:
+      hub_files: {repo: google/IndicGenBench_flores_in, pattern: "*flores_en_{iso}_test.json"}
+      format: json
+      json_field: examples
+      split: test
+    fields: {source: source, target: target}
+    metrics: [chrf, bleu, script_fidelity]
+    max_new_tokens: 256
+
+  # ------------------------------------------------------------------ math
+  - name: mgsm_{lang}
+    type: math
+    description: MGSM — GSM8K grade-school math, human-translated (Telugu, Bengali; English anchor).
+    languages: [te, bn, en]
+    tags: [indic, math, reasoning, text]
+    status: columns verified (question, answer_number); legacy script -> auto parquet fallback
+    dataset: {path: juletxara/mgsm, name: "{iso}", split: test}
+    fields: {question: question, answer: answer_number}
+    max_new_tokens: 768
+
+  # ------------------------------------------------------------------ code-mixed (Tanglish)
+  - name: tanglish_sentiment
+    type: mcq
+    lang: ta
+    family: tanglish_sentiment
+    description: >-
+      Tamil-English code-mixed YouTube comments (DravidianCodeMix, mostly romanised "Tanglish")
+      — 3-way sentiment. Rows labelled unknown_state / not-Tamil are excluded.
+    tags: [indic, code_mixed, indian_english, sentiment, classification, text]
+    status: columns + labels verified (0 Positive, 1 Negative, 2 Mixed_feelings, 3 unknown, 4 not-Tamil)
+    dataset: {path: community-datasets/tamilmixsentiment, split: test, filter: {label: [0, 1, 2]}}
+    choices: [Positive, Negative, Mixed feelings]
+    fields: {text: text, answer: label, answer_format: index0}
+    metrics: [accuracy, macro_f1]
+    prompt:
+      template: |-
+        This is a YouTube comment written in Tamil-English code-mixed text (often in Roman script).
+        What is its sentiment?
+
+        Comment: {text}
+
+        A. Positive
+        B. Negative
+        C. Mixed feelings
+        Answer with the option's letter from the given choices directly.
+
+  # ------------------------------------------------------------------ added in 0.3
+  - name: indicmmlu_pro_{lang}
+    type: mcq
+    description: IndicMMLU-Pro — MMLU-Pro (10 options) translated with IndicTrans2 and expert-checked.
+    languages: [ta, te, kn, hi, bn, mr, gu, pa, ur]
+    tags: [indic, knowledge, reasoning, translated, text]
+    status: configs per language name (tamil, hindi, ...), arrow files; columns question/options/answer
+    dataset: {path: LinguaLift/IndicMMLU-Pro, name: "{name_lower}", split: test}
+    fewshot_split: validation
+    group_by: category
+    fields: {id: question_id, question: question, choices: options, answer: "answer_index|answer",
+             answer_format: auto}
+
+  - name: global_mmlu_{lang}
+    type: mcq
+    description: >-
+      Global-MMLU (Cohere Labs) — MMLU with professional/community translation and a per-question
+      cultural-sensitivity label, so you can see culturally-agnostic vs culturally-sensitive accuracy.
+    languages: [hi, bn, te, en]
+    tags: [indic, knowledge, culture, text]
+    status: columns verified (option_a..d, answer letter, cultural_sensitivity_label); no Tamil config
+    dataset: {path: CohereLabs/Global-MMLU, name: "{iso}", split: test}
+    fewshot_split: dev
+    group_by: [cultural_sensitivity_label, subject_category]
+    fields: {id: sample_id, question: question, choices: [option_a, option_b, option_c, option_d],
+             answer: answer, answer_format: auto}
+
+  - name: offensive_codemix_{lang}
+    type: mcq
+    description: >-
+      Offensive-language detection on Dravidian-English code-mixed YouTube comments (DravidianLangTech
+      2021). Binary: offensive (any of the 4 offensive classes) vs not offensive; other-language rows dropped.
+    languages: [ta, ml, kn]
+    tags: [indic, code_mixed, safety, moderation, classification, text]
+    status: "columns + ClassLabel verified (0 Not_offensive, 1-4 offensive types, 5 not-<lang>); validation split"
+    dataset: {path: community-datasets/offenseval_dravidian, name: "{name_lower}", split: validation,
+              filter: {label: [0, 1, 2, 3, 4]}}
+    choices: ["Not offensive", "Offensive"]
+    answer_map: {0: 0, 1: 1, 2: 1, 3: 1, 4: 1}
+    fields: {text: text, answer: label, answer_format: index0}
+    metrics: [accuracy, macro_f1]
+    prompt:
+      template: |-
+        This is a social-media comment in {name}-English code-mixed text (it may be in Roman script).
+        Is it offensive (insulting, abusive, profane, or targeting a person or group)?
+
+        Comment: {text}
+
+        A. Not offensive
+        B. Offensive
+        Answer with the option's letter from the given choices directly.

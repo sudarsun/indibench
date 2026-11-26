@@ -93,6 +93,8 @@ class RunConfig:
     cache_dir: Optional[str] = None                    # HF datasets cache
     hf_token_env: str = "HF_TOKEN"
     trust_remote_code: Optional[bool] = None           # datasets: run Hub loading scripts (needs datasets<4)
+    allow_code_execution: bool = False                 # code tasks (HumanEval/MBPP) run model-written code
+    executive_summary: bool = True                     # write executive_summary.html (one page) after the run
     streaming: Optional[bool] = None                   # force streaming dataset loading for all tasks
     max_input_chars: Optional[int] = None              # truncate very long contexts (summarisation)
     log_level: str = "INFO"
