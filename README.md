@@ -278,6 +278,9 @@ indibench run -c configs/rtx2080ti_hf.yaml        # one config per GPU class: rt
   `device_map=auto`. For vLLM, use `--set model.tensor_parallel_size=2`.
 * `--mcq-mode loglikelihood` scores MCQ options by log-probability instead of parsing generated text.
   It works on the hf backend (text or images) and on vllm for text-only prompts.
+* `--attn flash_attention_2` needs flash-attn in the same venv as indibench. If it can't be used,
+  indibench falls back to SDPA and logs why. `indibench env` checks the installation and prints
+  the fix ([`docs/SETUP_UBUNTU.md`](docs/SETUP_UBUNTU.md) covers source builds).
 * For reasoning models, use `--disable-thinking`, or let the output budget grow (§7b). `<think>`
   blocks are stripped before scoring.
 

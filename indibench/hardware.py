@@ -21,7 +21,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -218,6 +218,11 @@ def harden_config(cfg, gpu: Optional[GPUInfo] = None) -> List[str]:
     if mc.attn_implementation == "flash_attention_2" and not gpu.flash_attn2:
         mc.attn_implementation = "sdpa"
         notes.append(f"FlashAttention-2 needs Ampere or newer; {gpu.name} -> using sdpa.")
+    elif mc.attn_implementation == "flash_attention_2" and mc.backend == "hf":
+        st = flash_attn_status(smoke_test=False)
+        if not st["ok"] and "no CUDA GPU" not in st["reason"]:
+            mc.attn_implementation = "sdpa"
+            notes.append(f"FlashAttention-2 requested but unusable: {st['reason']} Fix: {st['fix']} -> using sdpa.")
 
     q = (mc.quantization or "").lower()
     if q == "fp8" and not gpu.fp8:
@@ -240,3 +245,96 @@ def harden_config(cfg, gpu: Optional[GPUInfo] = None) -> List[str]:
     for n in notes:
         log.warning(n)
     return notes
+
+
+def flash_attn_status(smoke_test: bool = True) -> Dict[str, Any]:
+    """Why ``attn_implementation=flash_attention_2`` would (not) work in *this* Python environment.
+
+    Checks, in the order they usually fail for source builds: GPU generation, package importable,
+    package metadata (transformers ignores flash_attn without a ``flash-attn`` distribution record),
+    compiled CUDA extension (ABI mismatch with the installed torch), transformers' own check, and
+    optionally a tiny kernel call (catches builds without this GPU's architecture).
+    """
+    import importlib
+    import importlib.metadata as md
+    import importlib.util
+    import sys
+
+    out: Dict[str, Any] = {"ok": False, "version": None, "python": sys.executable, "reason": "", "fix": ""}
+    try:
+        import torch
+    except ImportError:
+        out.update(reason="PyTorch is not installed.", fix="install torch first")
+        return out
+    out["torch"] = torch.__version__
+    out["torch_cuda"] = torch.version.cuda
+    if not torch.cuda.is_available():
+        out.update(reason="PyTorch sees no CUDA GPU.", fix="check `nvidia-smi` and that torch is a CUDA build")
+        return out
+    cc = torch.cuda.get_device_capability(0)
+    if cc < (8, 0):
+        out.update(reason=f"FlashAttention-2 needs an Ampere or newer GPU (sm_80+); this one is sm_{cc[0]}{cc[1]}.",
+                   fix="use --attn sdpa")
+        return out
+    rebuild = ("rebuild it in this environment against the installed torch: "
+               f"`{sys.executable} -m pip install --no-build-isolation --no-cache-dir --force-reinstall "
+               "flash-attn` (or `pip install --no-build-isolation .` inside the flash-attention checkout)")
+    if importlib.util.find_spec("flash_attn") is None:
+        out.update(reason=f"the flash_attn module is not importable from {sys.executable} (it was probably "
+                          "built into another venv, e.g. the vLLM one).", fix=rebuild)
+        return out
+    try:
+        out["version"] = md.version("flash-attn")
+    except md.PackageNotFoundError:
+        out.update(reason="flash_attn imports, but no `flash-attn` package metadata is installed, and transformers "
+                          "only accepts flash_attn when that metadata exists (typical after `python setup.py install` "
+                          "or copying the build folder).", fix=rebuild)
+        return out
+    try:
+        dists = md.packages_distributions().get("flash_attn", [])
+        if dists and "flash-attn" not in [d.replace("_", "-").lower() for d in dists]:
+            out.update(reason=f"the flash_attn module belongs to {dists}, not to the `flash-attn` distribution "
+                              "(e.g. FlashAttention-4 / a fork); transformers rejects that for flash_attention_2.",
+                       fix=rebuild)
+            return out
+        if not dists:
+            out.update(reason="flash-attn is installed in a way that does not record which module it provides "
+                              "(typical for `pip install -e .` editable builds); transformers then reports it as "
+                              "unavailable.", fix="install it non-editable: " + rebuild)
+            return out
+    except Exception:
+        pass
+    try:
+        importlib.import_module("flash_attn_2_cuda")
+        from flash_attn import flash_attn_func  # noqa: F401
+    except Exception as e:  # ImportError: undefined symbol ... -> built against another torch / CUDA
+        out.update(reason=f"the compiled extension fails to load ({type(e).__name__}: {str(e)[:200]}). This "
+                          f"means it was built against a different PyTorch/CUDA than torch {torch.__version__} "
+                          f"(CUDA {torch.version.cuda}).", fix=rebuild)
+        return out
+    try:
+        from transformers.utils import is_flash_attn_2_available
+
+        if not is_flash_attn_2_available():
+            import transformers
+
+            out.update(reason=f"transformers {transformers.__version__} does not accept flash-attn "
+                              f"{out['version']} (needs >= 2.3.3 and the `flash-attn` distribution).", fix=rebuild)
+            return out
+    except ImportError:
+        pass
+    if smoke_test:
+        try:
+            from flash_attn import flash_attn_func
+
+            q = torch.randn(1, 16, 2, 64, device="cuda", dtype=torch.float16)
+            flash_attn_func(q, q, q, causal=True)
+            torch.cuda.synchronize()
+        except Exception as e:  # "no kernel image is available" -> arch not compiled in
+            out.update(reason=f"a test call failed ({type(e).__name__}: {str(e)[:200]}). The build probably does "
+                              f"not include kernels for sm_{cc[0]}{cc[1]}.",
+                       fix=f"rebuild with FLASH_ATTN_CUDA_ARCHS={cc[0]}{cc[1] if cc[0] != 8 else 0} "
+                           "(and MAX_JOBS=4 to limit RAM): " + rebuild)
+            return out
+    out.update(ok=True, reason="usable", fix="")
+    return out

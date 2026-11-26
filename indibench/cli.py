@@ -523,6 +523,15 @@ def cmd_env(args) -> int:
               f"bf16 {yes(g.bf16)} | FlashAttention-2 {yes(g.flash_attn2)} | FP8 {yes(g.fp8)}")
         if not g.supported_by_torch_cu13:
             print("  !! Pre-Turing GPU: current PyTorch CUDA-13 wheels have no kernels for it.")
+    from indibench.hardware import flash_attn_status
+
+    fa = flash_attn_status()
+    if fa["ok"]:
+        print(f"\nFlashAttention-2: usable (flash-attn {fa['version']}, torch {fa.get('torch')}, "
+              f"CUDA {fa.get('torch_cuda')}) -> --attn flash_attention_2")
+    else:
+        print(f"\nFlashAttention-2: NOT usable{' (flash-attn ' + fa['version'] + ')' if fa['version'] else ''}\n"
+              f"  why: {fa['reason']}\n  fix: {fa['fix']}\n  python: {fa['python']}")
     prof = profile_for(gpus[0])
     print(f"\nAuto hardware profile: {prof}")
     print("  fills unset keys:", json.dumps(HARDWARE_PROFILES[prof]))

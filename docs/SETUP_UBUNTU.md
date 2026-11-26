@@ -228,6 +228,29 @@ MAX_JOBS=8 uv pip install flash-attn --no-build-isolation     # may compile for 
 If it fails, nothing breaks: indibench falls back to PyTorch SDPA. On Hopper, vLLM ships its own
 FlashAttention-3 kernels.
 
+**Building from source.** Build inside the activated indibench venv, *after* the final torch is
+installed, and install it as a normal (non-editable) package so transformers can find its metadata:
+
+```bash
+source .venv/bin/activate
+git clone https://github.com/Dao-AILab/flash-attention && cd flash-attention && git checkout v2.8.4
+# compile only for your GPU: 80 = A100/3090/4090/L40S (sm_86/89 run sm_80 code), 90 = H100/H200
+FLASH_ATTN_CUDA_ARCHS=80 MAX_JOBS=4 python -m pip install --no-build-isolation .
+cd .. && indibench env          # must print "FlashAttention-2: usable"
+```
+
+`indibench env` tests the installation the way transformers does and names the cause when it is
+unusable:
+
+| `indibench env` says | Cause | Fix |
+|---|---|---|
+| not importable from …/python | built into another venv (often the vLLM one) | rebuild with this venv's `python -m pip` |
+| no `flash-attn` package metadata | `python setup.py install`, or the build folder copied | `python -m pip install --no-build-isolation .` |
+| does not record which module it provides | editable install (`pip install -e .`) | reinstall without `-e` |
+| compiled extension fails to load (`undefined symbol`) | torch was upgraded/changed after the build | rebuild with `--force-reinstall --no-cache-dir` |
+| test call failed / no kernel image | build excludes this GPU's architecture | rebuild with `FLASH_ATTN_CUDA_ARCHS` as above |
+| does not support Flash Attention 2 yet | that model class has no FA2 path in transformers | use `--attn sdpa` |
+
 ### vLLM (separate environment)
 vLLM pins its own PyTorch version. Keep it in its own venv so that it doesn't conflict with the hf
 environment:

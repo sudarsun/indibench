@@ -113,6 +113,7 @@ class HFModel(BaseModel):
             attn_options.append(None)
 
         last_err: Optional[Exception] = None
+        attn_errors: Dict[str, str] = {}
         for cls in classes:
             for attn in attn_options:
                 kw = dict(kwargs)
@@ -121,15 +122,28 @@ class HFModel(BaseModel):
                 try:
                     model = cls.from_pretrained(cfg.name_or_path, **kw)
                     if attn != cfg.attn_implementation:
-                        log.warning("attn_implementation=%s unavailable; using %s", cfg.attn_implementation, attn)
+                        reason = attn_errors.get(cfg.attn_implementation, "unknown error")
+                        hint = ""
+                        if cfg.attn_implementation == "flash_attention_2":
+                            from indibench.hardware import flash_attn_status
+
+                            st = flash_attn_status()
+                            hint = f" Diagnosis: {st['reason']} Fix: {st['fix']}" if not st["ok"] else \
+                                " (flash-attn itself works, so this model class does not support it)"
+                        log.warning("attn_implementation=%s could not be used, falling back to %s. "
+                                    "transformers said: %s.%s", cfg.attn_implementation, attn or "default",
+                                    reason[:400], hint)
                     if cls is t.AutoModelForCausalLM and self.supports_images:
                         log.warning("Loaded with AutoModelForCausalLM; image inputs may not be supported")
                     return model
-                except (ValueError, ImportError, KeyError, TypeError) as e:
+                except (ValueError, ImportError, KeyError, TypeError, RuntimeError) as e:
                     last_err = e
                     msg = str(e).lower()
-                    if "attn" in msg or "flash" in msg or "sdpa" in msg:
+                    if attn and ("attn" in msg or "attention" in msg or "flash" in msg or "sdpa" in msg):
+                        attn_errors[attn] = f"{type(e).__name__}: {str(e).strip().splitlines()[0]}"
                         continue  # try next attention implementation
+                    if isinstance(e, RuntimeError):
+                        raise
                     break  # wrong class -> try the next class
         raise RuntimeError(f"Could not load {cfg.name_or_path}: {last_err}")
 
@@ -276,7 +290,10 @@ class HFModel(BaseModel):
         if "pixel_values" in inputs and self.dtype != "auto":
             inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
         max_new = max(int(r.max_new_tokens or 512) for r in batch)
-        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id, "max_length": None}
+        # max_length=None: many checkpoints ship a generation_config with max_length set, which makes
+        # transformers warn that both max_new_tokens and max_length are given on every call.
+        kw: Dict[str, Any] = {"max_new_tokens": max_new, "max_length": None,
+                              "pad_token_id": self.tokenizer.pad_token_id}
         if gen.temperature and gen.temperature > 0:
             kw.update(do_sample=True, temperature=gen.temperature, top_p=gen.top_p)
             if gen.top_k:
