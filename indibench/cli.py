@@ -7,6 +7,7 @@
     indibench check    tamil                   # can every task load & parse? (fast)
     indibench report   results/<run>
     indibench compare  results/run_a results/run_b
+    indibench summary  results/<run> [--baseline results/<other>] [--pdf]   # one-page executive summary
     indibench env                              # GPU info + recommended settings
     indibench init-config my.yaml
 """
@@ -155,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
         if a.dest and "." in a.dest and a.metavar is None and a.nargs != 0 and a.const is None:
             a.metavar = a.dest.split(".")[-1].upper()
 
+    sm = sub.add_parser("summary", help="one-page executive summary (HTML/PDF/Markdown) for business readers")
+    sm.add_argument("run_dir", help="run folder or results.json")
+    sm.add_argument("-b", "--baseline", help="another run to compare against (shows deltas per capability)")
+    sm.add_argument("-o", "--output-dir", help="where to write (default: the run folder)")
+    sm.add_argument("--title", help="page title")
+    sm.add_argument("--format", choices=["html", "md"], default="html")
+    sm.add_argument("--pdf", action="store_true", help="also render a PDF (WeasyPrint or headless Chrome)")
+    sm.add_argument("--narrative-model", help="optional: OpenAI-compatible model to draft the lead paragraph")
+    sm.add_argument("--narrative-api-base", default="http://localhost:8000/v1")
+    sm.add_argument("--narrative-api-key-env", default="OPENAI_API_KEY")
+
     ev = sub.add_parser("env", help="show GPU / library info, capability checks and model-fit advice")
     ev.add_argument("-m", "--model", help="model id to check memory fit for, e.g. Qwen/Qwen2.5-VL-7B-Instruct")
     ev.add_argument("--quantization", help="4bit | 8bit | awq | gptq | fp8")
@@ -196,7 +208,7 @@ def cmd_run(args) -> int:
     ev = Evaluator(cfg)
     payload = ev.run()
     print_summary(payload)
-    print(f"\nResults written to {ev.run_dir}/ (report.md, summary.csv, results.json, predictions/)")
+    print(f"\nResults written to {ev.run_dir}/ (executive_summary.html, report.md, summary.csv, results.json, predictions/)")
     errors = [k for k, v in payload["results"].items() if "error" in v]
     return 1 if errors and len(errors) == len(payload["results"]) else 0
 
@@ -336,6 +348,29 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_summary(args) -> int:
+    from indibench.summary import analyse, llm_narrative, load_payload, write_executive_summary
+
+    payload = load_payload(args.run_dir)
+    baseline = load_payload(args.baseline) if args.baseline else None
+    out_dir = args.output_dir or (args.run_dir if os.path.isdir(args.run_dir) else os.path.dirname(args.run_dir))
+    story = None
+    if args.narrative_model:
+        try:
+            story = llm_narrative(analyse(payload, baseline), payload.get("model", {}).get("name", "model"),
+                                  args.narrative_api_base, args.narrative_model, args.narrative_api_key_env)
+            if story:
+                story += " <i style='color:#7b8293'>(AI-drafted from the scores below)</i>"
+        except Exception as e:
+            print(f"warning: narrative model failed ({e}); using the rule-based summary", file=sys.stderr)
+    path = write_executive_summary(payload, out_dir, baseline, args.title, args.format, args.pdf, story)
+    if args.pdf and not path.endswith(".pdf"):
+        print("note: no PDF engine found (pip install weasyprint, or install chromium); open the HTML and "
+              "use Print > Save as PDF — the page is laid out for one A4 sheet.", file=sys.stderr)
+    print(path)
+    return 0
+
+
 def cmd_compare(args) -> int:
     from indibench.report import compare_runs
 
@@ -446,20 +481,18 @@ def cmd_init_config(args) -> int:
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> None:
     # Reduce CUDA memory fragmentation — matters most on 11-24 GB cards. Must be set before torch init.
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = build_parser().parse_args(argv)
     handlers = {"run": cmd_run, "list": cmd_list, "inspect": cmd_inspect, "check": cmd_check,
-                "report": cmd_report, "compare": cmd_compare, "env": cmd_env, "init-config": cmd_init_config}
+                "report": cmd_report, "compare": cmd_compare, "summary": cmd_summary, "env": cmd_env, "init-config": cmd_init_config}
     try:
         code = handlers[args.cmd](args)
     except (ValueError, KeyError, FileNotFoundError) as e:
         print(f"error: {e}", file=sys.stderr)
         code = 2
-    
-    #sys.exit(code)
-    return code
+    sys.exit(code)
 
 
 if __name__ == "__main__":

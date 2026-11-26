@@ -17,7 +17,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 log = logging.getLogger(__name__)
 
-_FILE_FORMATS = {".json": "json", ".jsonl": "json", ".parquet": "parquet", ".csv": "csv", ".tsv": "csv"}
+_FILE_FORMATS = {".json": "json", ".jsonl": "json", ".parquet": "parquet", ".csv": "csv", ".tsv": "csv",
+                 ".arrow": "arrow"}
 
 
 class DatasetLoadError(RuntimeError):
@@ -84,6 +85,9 @@ def _load_raw(dspec: Dict[str, Any], split: str, streaming: bool, cache_dir: Opt
     if dspec.get("revision"):
         kwargs["revision"] = dspec["revision"]
 
+    if dspec.get("hub_files"):
+        data_files = resolve_hub_files(dspec["hub_files"], token)
+        path = None
     # Local file → use the generic builder.
     if path and os.path.isfile(os.path.expanduser(path)):
         data_files = os.path.expanduser(path)
@@ -112,19 +116,67 @@ def _load_raw(dspec: Dict[str, Any], split: str, streaming: bool, cache_dir: Opt
     return datasets.load_dataset(path, split=split, **kwargs)
 
 
+def resolve_hub_files(spec: Dict[str, Any], token: Optional[str] = None) -> List[str]:
+    """``{repo: org/name, pattern: "*english-ta_test.json"}`` -> hf:// URLs of matching repo files.
+
+    Matching is on the file's base name (or full path if the pattern contains '/'), so it works
+    whatever folder layout the repository uses.
+    """
+    import fnmatch
+
+    from huggingface_hub import HfApi
+
+    repo, pattern = spec["repo"], spec["pattern"]
+    rev = spec.get("revision")
+    files = HfApi(token=token).list_repo_files(repo, repo_type="dataset", revision=rev)
+    key = (lambda f: f) if "/" in pattern else os.path.basename
+    hits = sorted(f for f in files if fnmatch.fnmatchcase(key(f), pattern))
+    if not hits:
+        stem = pattern.replace("*", "").split("_")[0]
+        near = [f for f in files if stem and stem in f][:12]
+        raise DatasetLoadError(f"{repo}: no file matches {pattern!r}. Similar files: {near or files[:12]}")
+    at = f"@{rev.replace('/', '%2F')}" if rev else ""
+    return [f"hf://datasets/{repo}{at}/{f}" for f in hits]
+
+
 def _matches(row: Dict[str, Any], flt: Dict[str, Any]) -> bool:
     for col, want in flt.items():
-        val = row.get(col)
+        val = _first_present(row, col)
         if want == "__notnull__":
             if val is None:
                 return False
             continue
         if isinstance(want, list):
-            if val not in want:
+            if val not in want and str(val) not in [str(w) for w in want]:
                 return False
-        elif val != want:
+        elif val != want and str(val) != str(want):
             return False
     return True
+
+
+def _first_present(row: Dict[str, Any], col: str) -> Any:
+    """``col`` may list alternatives: ``"language|lang"`` -> value of the first column present."""
+    if "|" not in col:
+        return row.get(col)
+    for c in col.split("|"):
+        if c.strip() in row:
+            return row[c.strip()]
+    return None
+
+
+def resolve_filter(flt: Optional[Dict[str, Any]], columns: Sequence[str], what: str = "") -> Optional[Dict[str, Any]]:
+    """Map alternative filter keys onto real columns; fail loudly if a filter column is missing."""
+    if not flt:
+        return flt
+    out: Dict[str, Any] = {}
+    cols = list(columns)
+    for key, want in flt.items():
+        alts = [c.strip() for c in key.split("|")]
+        hit = next((c for c in alts if c in cols), None)
+        if hit is None:
+            raise DatasetLoadError(f"{what}: filter column {key!r} not found. Dataset columns: {cols}")
+        out[hit] = want
+    return out
 
 
 def _materialize(ds, flt: Optional[Dict[str, Any]], max_rows: Optional[int]) -> List[Dict[str, Any]]:
@@ -223,6 +275,12 @@ def _unwrap_container(data):
             log.info("Transposing column-oriented JSON (%d rows)", len(vals[keys[0]]))
             return [dict(zip(keys, t)) for t in zip(*(vals[k] for k in keys))]
     return data
+
+
+def _is_config_error(e: Exception) -> bool:
+    m = str(e).lower()
+    return ("builderconfig" in m and "not found" in m) or "unknown config" in m or \
+        ("config name" in m and ("missing" in m or "not found" in m)) or "available configs" in m
 
 
 def _is_script_error(e: Exception) -> bool:
@@ -369,7 +427,18 @@ def load_rows(
         for cfg_name in configs:
             sub = dict(dspec, name=cfg_name)
             sub.pop("names", None)
-            ds = _load_with_fallback(sub, split, streaming, cache_dir, token)
+            try:
+                ds = _load_with_fallback(sub, split, streaming, cache_dir, token)
+            except Exception as e:
+                # Per-language config missing, but the repo is one table with a language column?
+                fb = dspec.get("config_fallback_filter")
+                if not fb or not _is_config_error(e):
+                    raise
+                log.warning("%s has no config %r; loading the single table and filtering %s",
+                            dspec.get("path"), cfg_name, fb)
+                sub = {k: v for k, v in sub.items() if k != "name"}
+                ds = _load_with_fallback(sub, split, streaming, cache_dir, token)
+                flt = dict(flt or {}, **fb)
             if streaming:
                 if max_rows is not None and dspec.get("shuffle_buffer"):
                     ds = ds.shuffle(seed=dspec.get("seed", 1234), buffer_size=int(dspec["shuffle_buffer"]))
@@ -394,8 +463,9 @@ def load_rows(
                     parts.append(part)
                     continue
                 if flt:
-                    cols = list(flt)
-                    ds = ds.filter(lambda *vals: _matches(dict(zip(cols, vals)), flt), input_columns=cols)
+                    real = resolve_filter(flt, ds.column_names, str(dspec.get("path") or dspec.get("data_files")))
+                    cols = list(real)
+                    ds = ds.filter(lambda *vals: _matches(dict(zip(cols, vals)), real), input_columns=cols)
                 if multi:
                     ds = ds.add_column("_config", [cfg_name] * len(ds))
                 part = ds
