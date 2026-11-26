@@ -118,6 +118,19 @@ def render_markdown(payload: Dict[str, Any]) -> str:
             bd_lines.append("")
     if bd_lines:
         lines += ["", "## Breakdowns", ""] + bd_lines
+    perf = [(n, r) for n, r in payload.get("results", {}).items() if r.get("gpu")]
+    if any(r.get("gpu") for _, r in perf):
+        lines += ["", "## GPU utilisation", "", "| task | batch | samples/s | GPU busy % | idle % | peak mem % |",
+                  "|---|---:|---:|---:|---:|---:|"]
+        tips = []
+        for n, r in perf:
+            g = r.get("gpu") or {}
+            sps = (r.get("timing") or {}).get("samples_per_s")
+            lines.append(f"| {n} | {r.get('batch_size', '')} | {_fmt(sps)} | {_fmt(g.get('util_avg'))} | "
+                         f"{_fmt(g.get('idle_share'))} | {_fmt(g.get('mem_peak_pct'))} |")
+            tips += [t for t in g.get("hints", []) if t not in tips]
+        if tips:
+            lines += ["", "Suggestions:", ""] + [f"- {t}" for t in tips]
     lines += ["", "_Scores are percentages (chrF++/BLEU on their native 0–100 scale; CER lower is better). "
               "CIs: percentile bootstrap over evaluated samples — with small `--limit`, read differences "
               "smaller than the CI width as noise._"]

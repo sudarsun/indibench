@@ -279,6 +279,7 @@ class CodeTask(Task):
     """
 
     default_metrics = ["pass@1"]
+    parallel_scoring = True        # unit tests run in subprocesses -> score a batch concurrently
 
     def load_source(self, max_rows=None):
         if not code_execution_allowed(self.run):

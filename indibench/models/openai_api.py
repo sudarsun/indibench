@@ -96,6 +96,10 @@ class OpenAIModel(BaseModel):
             log.warning("Malformed API response: %s", str(resp)[:300])
             return ""
 
+    def inference_chunk(self, batch_size: int, modality: str = "text") -> int:
+        # Keep the server's scheduler fed: several requests per worker thread in flight.
+        return max(batch_size, self.cfg.concurrency * 4)
+
     def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
         with ThreadPoolExecutor(max_workers=max(1, self.cfg.concurrency)) as ex:
             return list(ex.map(lambda r: self._one(r, gen), requests))

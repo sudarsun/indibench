@@ -188,14 +188,41 @@ class HFModel(BaseModel):
         return self.tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=add_special)
 
     # ------------------------------------------------------------------ generation
+    # ------------------------------------------------------------------ batching helpers
+    # `_cap` is the largest batch that fit in memory for the current task. It is learned from
+    # CUDA OOMs and reused, so one OOM does not repeat on every following batch. The runner
+    # resets it at the start of each task (prompt lengths differ between tasks).
+    _cap: Optional[int] = None
+
+    def reset_capacity(self) -> None:
+        self._cap = None
+
+    @staticmethod
+    def _cost(r: Request) -> int:
+        return sum(len(p.get("text", "")) for m in r.messages for p in m["content"]) + 4000 * len(r.images)
+
+    def _split(self, items: List[Any]) -> List[List[Any]]:
+        n = self._cap or len(items)
+        return [items[i:i + n] for i in range(0, len(items), n)] if items else []
+
+    def _note_oom(self, size: int) -> int:
+        new = max(1, size // 2)
+        if self._cap is None or new < self._cap:
+            log.warning("CUDA OOM at batch=%d -> using batch<=%d for the rest of this task", size, new)
+            self._cap = new
+        self.torch.cuda.empty_cache()
+        return new
+
+    # ------------------------------------------------------------------ generation
     def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
         outputs: List[Optional[str]] = [None] * len(requests)
-        # Never mix image and text-only prompts in one processor call.
-        with_img = [i for i, r in enumerate(requests) if r.images]
-        without = [i for i, r in enumerate(requests) if not r.images]
+        # Never mix image and text-only prompts in one processor call. Within each group,
+        # sort by prompt size so a batch holds similar lengths (less padding = more useful work).
+        with_img = sorted((i for i, r in enumerate(requests) if r.images), key=lambda i: self._cost(requests[i]))
+        without = sorted((i for i, r in enumerate(requests) if not r.images), key=lambda i: self._cost(requests[i]))
         for group in (with_img, without):
-            if group:
-                for i, text in zip(group, self._generate_safe([requests[i] for i in group], gen)):
+            for sub in self._split(group):
+                for i, text in zip(sub, self._generate_safe([requests[i] for i in sub], gen)):
                     outputs[i] = text
         return [o or "" for o in outputs]
 
@@ -204,12 +231,14 @@ class HFModel(BaseModel):
         try:
             return self._generate_batch(batch, gen)
         except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
             if len(batch) == 1:
+                torch.cuda.empty_cache()
                 raise
-            mid = len(batch) // 2
-            log.warning("CUDA OOM at batch=%d; splitting into %d + %d", len(batch), mid, len(batch) - mid)
-            return self._generate_safe(batch[:mid], gen) + self._generate_safe(batch[mid:], gen)
+            n = self._note_oom(len(batch))
+            out: List[str] = []
+            for i in range(0, len(batch), n):
+                out.extend(self._generate_safe(batch[i:i + n], gen))
+            return out
 
     def _generate_batch(self, batch: List[Request], gen: GenerationConfig) -> List[str]:
         torch = self.torch
@@ -238,28 +267,64 @@ class HFModel(BaseModel):
 
     # ------------------------------------------------------------------ log-likelihood
     def loglikelihood(self, requests: List[Request]) -> List[List[Tuple[float, int]]]:
-        torch = self.torch
-        results = []
-        for r in requests:
+        """Batched scoring of all (prompt + continuation) sequences, right-padded so token
+        positions match the unpadded sequence exactly."""
+        items = []  # (request index, continuation index, full text, images, n_ctx)
+        for ri, r in enumerate(requests):
             prompt = self.render(r)
-            imgs = [r.images] if r.images else None
-            n_ctx = self._encode([prompt], imgs)["input_ids"].shape[1]
-            scores = []
-            for cont in r.continuations or []:
-                enc = self._encode([prompt + cont], imgs).to(self.model.device)
-                if "pixel_values" in enc and self.dtype != "auto":
-                    enc["pixel_values"] = enc["pixel_values"].to(self.dtype)
-                with torch.inference_mode():
-                    logits = self.model(**enc).logits
-                ids = enc["input_ids"][0]
-                if ids.shape[0] <= n_ctx:
-                    scores.append((float("-inf"), 0))
-                    continue
-                logp = torch.log_softmax(logits[0, n_ctx - 1:-1].float(), dim=-1)
-                tgt = ids[n_ctx:]
-                scores.append((float(logp.gather(1, tgt[:, None]).sum()), int(tgt.shape[0])))
-            results.append(scores)
-        return results
+            imgs = list(r.images) if r.images else None
+            n_ctx = self._encode([prompt], [imgs] if imgs else None)["input_ids"].shape[1]
+            for ci, cont in enumerate(r.continuations or []):
+                items.append((ri, ci, prompt + cont, imgs, n_ctx))
+        scores: List[List[Tuple[float, int]]] = [[(float("-inf"), 0)] * len(r.continuations or []) for r in requests]
+        with_img = [it for it in items if it[3]]
+        without = [it for it in items if not it[3]]
+        for group in (with_img, without):
+            group.sort(key=lambda it: len(it[2]))
+            for sub in self._split(group):
+                for (ri, ci, *_), val in zip(sub, self._ll_safe(sub)):
+                    scores[ri][ci] = val
+        return scores
+
+    def _ll_safe(self, batch) -> List[Tuple[float, int]]:
+        torch = self.torch
+        try:
+            return self._ll_batch(batch)
+        except torch.cuda.OutOfMemoryError:
+            if len(batch) == 1:
+                torch.cuda.empty_cache()
+                raise
+            n = self._note_oom(len(batch))
+            out: List[Tuple[float, int]] = []
+            for i in range(0, len(batch), n):
+                out.extend(self._ll_safe(batch[i:i + n]))
+            return out
+
+    def _ll_batch(self, batch) -> List[Tuple[float, int]]:
+        torch = self.torch
+        texts = [it[2] for it in batch]
+        imgs = [it[3] for it in batch] if batch[0][3] else None
+        old_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "right"
+        try:
+            enc = self._encode(texts, imgs).to(self.model.device)
+        finally:
+            self.tokenizer.padding_side = old_side
+        if "pixel_values" in enc and self.dtype != "auto":
+            enc["pixel_values"] = enc["pixel_values"].to(self.dtype)
+        with torch.inference_mode():
+            logits = self.model(**enc).logits
+        lengths = enc["attention_mask"].sum(dim=1).tolist()
+        out = []
+        for j, it in enumerate(batch):
+            n_ctx, L = it[4], int(lengths[j])
+            if L <= n_ctx:
+                out.append((float("-inf"), 0))
+                continue
+            logp = torch.log_softmax(logits[j, n_ctx - 1:L - 1].float(), dim=-1)
+            tgt = enc["input_ids"][j, n_ctx:L]
+            out.append((float(logp.gather(1, tgt[:, None]).sum()), int(tgt.shape[0])))
+        return out
 
     def info(self) -> Dict[str, Any]:
         torch = self.torch

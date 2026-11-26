@@ -5,7 +5,9 @@ import datetime as _dt
 import logging
 import os
 import platform
+import queue
 import re
+import threading
 import sys
 import time
 from typing import Any, Dict, Iterator, List, Optional, Sequence
@@ -13,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence
 from indibench import __version__
 from indibench.config import BenchConfig, dump_config
 from indibench.data.loader import DatasetLoadError, sample_indices
+from indibench.gpumon import GPUMonitor, utilisation_hints
 from indibench.languages import expand_language_filter
 from indibench.metrics import scores as M
 from indibench.models.base import BaseModel, load_model
@@ -21,6 +24,10 @@ from indibench.tasks.registry import TaskRegistry
 from indibench.utils import append_jsonl, read_jsonl, strip_thinking, write_json
 
 log = logging.getLogger(__name__)
+
+
+def _req_cost(r) -> int:
+    return sum(len(p.get("text", "")) for m in r.messages for p in m["content"]) + 4000 * len(r.images)
 
 
 def _chunks(seq: Sequence[Any], n: int) -> Iterator[Sequence[Any]]:
@@ -209,45 +216,92 @@ class Evaluator:
         records: List[Dict[str, Any]] = []
         skipped = 0
         logged = 0
-        bs = cfg.run.batch_size
+        bs = self._batch_size(task)
+        chunk = model.inference_chunk(bs, task.modality)
+        if cfg.run.inference_chunk:
+            chunk = int(cfg.run.inference_chunk)
+        prep_group = max(chunk, bs * 8)           # a pool large enough to length-sort into batches
+        model.reset_capacity()
         _reset_peak_mem()
         t_inf = time.time()
         n_new = 0
         progress = _Progress(task.name, len(idx))
-        # Decode rows lazily in chunks so image datasets never sit fully in RAM.
-        for chunk in _chunks(idx, max(bs * 4, 32)):
-            docs: List[Doc] = []
-            for i, row in zip(chunk, src.rows(chunk)):
+        state = {"use_ll": use_ll}
+
+        # Producer: decode rows, build docs and model requests (image decode/resize, prompt
+        # rendering) in a background thread so the GPU never waits for the CPU between batches.
+        q: "queue.Queue" = queue.Queue(maxsize=max(1, int(cfg.run.prefetch)))
+        stop = threading.Event()
+
+        def produce():
+            try:
+                for part in _chunks(idx, prep_group):
+                    if stop.is_set():
+                        return
+                    docs, reqs, resumed, bad = [], [], [], 0
+                    for i, row in zip(part, src.rows(part)):
+                        try:
+                            d = task.make_doc(row, i)
+                        except Exception as e:
+                            log.debug("[%s] bad row %s: %s", task.name, i, e)
+                            d = None
+                        if d is None:
+                            bad += 1
+                        elif d.id in done:
+                            resumed.append(done[d.id])
+                        else:
+                            docs.append(d)
+                            reqs.append(self._build(task, d, state["use_ll"]))
+                    q.put(("group", docs, reqs, resumed, bad))
+                q.put(("end", None, None, None, 0))
+            except BaseException as e:  # surface producer errors in the main thread
+                q.put(("error", e, None, None, 0))
+
+        producer = threading.Thread(target=produce, name=f"prefetch-{task.name}", daemon=True)
+        monitor = GPUMonitor().start() if cfg.run.gpu_monitor else None
+        producer.start()
+        try:
+            while True:
+                kind, docs, reqs, resumed, bad = q.get()
+                if kind == "error":
+                    raise docs
+                if kind == "end":
+                    break
+                skipped += bad
+                records.extend(resumed)
+                progress.advance(len(resumed))
+                # Similar-length prompts together -> less padding for static-batching backends.
+                order = sorted(range(len(docs)), key=lambda k: _req_cost(reqs[k]))
+                docs, reqs = [docs[k] for k in order], [reqs[k] for k in order]
+                for a in range(0, len(docs), chunk):
+                    bd, br = docs[a:a + chunk], reqs[a:a + chunk]
+                    try:
+                        new = self._run_batch(task, bd, br, state["use_ll"])
+                    except NotImplementedError as e:
+                        log.warning("[%s] %s — falling back to generation", task.name, e)
+                        state["use_ll"] = False
+                        br = [self._build(task, d, False) for d in bd]
+                        new = self._run_batch(task, bd, br, False)
+                    for d, rec in zip(bd, new):
+                        if logged < cfg.run.log_samples:
+                            log.info("[%s] sample %s\n--- prompt ---\n%s\n--- response ---\n%s\n--- pred=%r gold=%r",
+                                     task.name, d.id, rec["prompt"][-1500:], rec["response"][:500], rec["pred"],
+                                     rec["gold"])
+                            logged += 1
+                    records.extend(new)
+                    n_new += len(new)
+                    if cfg.run.save_predictions:
+                        append_jsonl(pred_path, new)
+                    progress.advance(len(new))
+        finally:
+            stop.set()
+            while producer.is_alive():          # unblock a producer waiting on a full queue
                 try:
-                    d = task.make_doc(row, i)
-                except Exception as e:
-                    log.debug("[%s] bad row %s: %s", task.name, i, e)
-                    d = None
-                if d is None:
-                    skipped += 1
-                    continue
-                if d.id in done:
-                    records.append(done[d.id])
-                    progress.advance()
-                    continue
-                docs.append(d)
-            for batch in _chunks(docs, bs):
-                try:
-                    new = self._infer(task, list(batch), use_ll)
-                except NotImplementedError as e:
-                    log.warning("[%s] %s — falling back to generation", task.name, e)
-                    use_ll = False
-                    new = self._infer(task, list(batch), use_ll)
-                for d, rec in zip(batch, new):
-                    if logged < cfg.run.log_samples:
-                        log.info("[%s] sample %s\n--- prompt ---\n%s\n--- response ---\n%s\n--- pred=%r gold=%r",
-                                 task.name, d.id, rec["prompt"][-1500:], rec["response"][:500], rec["pred"], rec["gold"])
-                        logged += 1
-                records.extend(new)
-                n_new += len(new)
-                if cfg.run.save_predictions:
-                    append_jsonl(pred_path, new)
-                progress.advance(len(new))
+                    q.get_nowait()
+                except queue.Empty:
+                    producer.join(timeout=0.1)
+            gpu_stats = monitor.stop() if monitor else None
+        use_ll = state["use_ll"]
         progress.close()
         inf_time = time.time() - t_inf
 
@@ -266,7 +320,18 @@ class Evaluator:
             "timing": {"seconds": round(inf_time, 1),
                        "samples_per_s": round(n_new / inf_time, 3) if inf_time > 0 and n_new else None},
             "peak_gpu_mem_gb": _peak_mem_gb(),
+            "batch_size": bs, "inference_chunk": chunk,
         }
+        if gpu_stats:
+            out["gpu"] = gpu_stats
+            hints = utilisation_hints(gpu_stats, cfg.model.backend, bs, task.modality)
+            if hints:
+                out["gpu"]["hints"] = hints
+                log.warning("[%s] GPU busy only %.0f%% of the time (memory peak %.0f%%). Try: %s", task.name,
+                            gpu_stats["util_avg"], gpu_stats.get("mem_peak_pct") or 0, "; ".join(hints))
+            else:
+                log.info("[%s] GPU utilisation %.0f%%, memory peak %.0f%%", task.name, gpu_stats["util_avg"],
+                         gpu_stats.get("mem_peak_pct") or 0)
         if task.group_by and not task.predict_only:
             out["breakdown"] = self._breakdown(task, records, primary)
         nch = [r["n_choices"] for r in records if r.get("n_choices")]
@@ -279,24 +344,42 @@ class Evaluator:
             log.info("[%s] %s = %.2f%s (n=%d)", task.name, primary, pm["value"], ci, len(records))
         return out
 
-    def _infer(self, task: Task, docs: List[Doc], use_ll: bool) -> List[Dict[str, Any]]:
-        cfg, model = self.cfg, self.model
-        sys_p = cfg.model.system_prompt
+    def _batch_size(self, task: Task) -> int:
+        bs = self.cfg.run.batch_size
+        if bs == "auto":
+            # Start big; the hf backend halves on OOM and remembers the size that fits.
+            return 16 if task.modality == "image" else 64
+        return int(bs)
+
+    def _build(self, task: Task, d: Doc, use_ll: bool):
+        sys_p = self.cfg.model.system_prompt
         if use_ll:
-            reqs = [task.build_ll_request(d, sys_p) for d in docs]
+            return task.build_ll_request(d, sys_p)
+        r = task.build_request(d, sys_p)
+        try:
+            r._gold = task.gold_text(d)  # used only by the dummy 'oracle' backend
+        except Exception:
+            r._gold = None
+        return r
+
+    def _run_batch(self, task: Task, docs: List[Doc], reqs: list, use_ll: bool) -> List[Dict[str, Any]]:
+        cfg, model = self.cfg, self.model
+        if use_ll:
             outs = model.loglikelihood(reqs)
             scored = [task.score_ll(d, o) for d, o in zip(docs, outs)]
             responses = [str([round(x[0], 3) for x in o]) for o in outs]
         else:
-            reqs = [task.build_request(d, sys_p) for d in docs]
-            for d, r in zip(docs, reqs):
-                try:
-                    r._gold = task.gold_text(d)  # used only by the dummy 'oracle' backend
-                except Exception:
-                    r._gold = None
             raw = model.generate(reqs, cfg.generation)
             responses = [strip_thinking(x) if cfg.generation.strip_thinking else x for x in raw]
-            scored = [task.score(d, x) for d, x in zip(docs, responses)]
+            if getattr(task, "parallel_scoring", False) and len(docs) > 1:
+                # e.g. code execution: each sample runs in its own subprocess
+                from concurrent.futures import ThreadPoolExecutor
+
+                workers = max(1, min(len(docs), int(cfg.run.score_workers or (os.cpu_count() or 2))))
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    scored = list(ex.map(lambda dx: task.score(dx[0], dx[1]), zip(docs, responses)))
+            else:
+                scored = [task.score(d, x) for d, x in zip(docs, responses)]
         out = []
         for d, r, resp, (pred, mets) in zip(docs, reqs, responses, scored):
             prompt_text = "\n".join(p["text"] for p in r.messages[-1]["content"] if p.get("type") == "text")

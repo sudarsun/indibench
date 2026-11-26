@@ -279,6 +279,50 @@ indibench run -c configs/rtx2080ti_hf.yaml        # one config per GPU class: rt
 * For reasoning models, use `--disable-thinking` or raise `--max-new-tokens`. `<think>` blocks are
   stripped before scoring.
 
+### 7a. Keeping the GPU busy
+
+indibench samples GPU utilisation and memory once a second for every task (via NVML or
+`nvidia-smi`). The numbers go into `results.json` under `gpu`, into a **GPU utilisation** table in
+`report.md`, and into a log warning with suggested fixes when a task kept the GPU busy less than
+70% of the time. `--no-gpu-monitor` turns this off.
+
+What the pipeline already does:
+
+* **CPU work runs ahead of the GPU.** A background thread decodes dataset rows, decodes and resizes
+  images and renders prompts while the model runs. `--prefetch N` (default 2) sets how many groups
+  it prepares in advance; raise it to 4 for image-heavy tasks if the log reports idle gaps.
+* **Large calls to engines that batch continuously.** vLLM gets 1024 text or 256 image requests
+  per call, and the OpenAI-compatible client keeps `4 × --concurrency` requests in flight. Both
+  ignore `--batch-size`. `--inference-chunk N` overrides the size.
+* **Less padding.** Prompts are sorted by length before batching, so a batch doesn't wait on one
+  very long sample.
+* **Batched log-likelihood.** `--mcq-mode loglikelihood` scores all options of a batch in one
+  forward pass instead of one pass per option.
+* **OOM recovery is remembered.** When the hf backend halves a batch after running out of memory,
+  it keeps the smaller size for the rest of the task instead of failing on every batch.
+* **Code tasks score in parallel.** Unit tests for HumanEval/MBPP run on all CPU cores
+  (`--set run.score_workers=N`).
+
+What to change, by symptom:
+
+| Symptom | Fix |
+|---|---|
+| hf backend, memory < 60%, GPU busy < 70% | `--batch-size auto` (starts at 64 text / 16 image and shrinks on OOM), or set a larger number |
+| hf backend on generation tasks, busy in bursts | `--backend vllm`. transformers waits for the longest answer in each batch; vLLM refills slots as answers finish (typically 3–10× faster) |
+| vLLM, memory looks full but cores idle | Normal: vLLM reserves `gpu_memory_utilization` (0.90) for KV cache up front. Look at the busy %, not memory |
+| vLLM, busy < 70% | `--inference-chunk 2048` and `--set model.extra.max_num_seqs=512` (more sequences decoded at once); check that image decoding isn't the bottleneck (`--max-pixels`, `--prefetch 4`) |
+| Image tasks, frequent idle gaps | Lower `--max-pixels`, raise `--prefetch`; store datasets on local SSD (`HF_HOME`) instead of network disks |
+| OpenAI-compatible server | `--concurrency 64`–`128`; on the server, `--max-num-seqs 256` |
+| Short `--limit` runs | Model load and dataset download dominate. Utilisation numbers are only meaningful for tasks running > 30 s |
+| Several GPUs, one busy | hf `device_map=auto` runs layers on one GPU at a time (pipeline, not parallel). Use vLLM with `--set model.tensor_parallel_size=N`, or run one indibench process per GPU with `CUDA_VISIBLE_DEVICES` and different `--tasks` |
+
+```bash
+# typical single-GPU settings
+indibench run -c configs/tamil_l40s_hf.yaml --batch-size auto --prefetch 4
+indibench run -c configs/indic_a100_vllm.yaml --inference-chunk 2048
+watch -n1 nvidia-smi        # or: nvtop
+```
+
 ## 8a. Executive summary for business readers
 
 Every run writes `executive_summary.html` to its run folder. This is a single A4 page meant for

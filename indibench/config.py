@@ -40,7 +40,7 @@ class ModelConfig:
     api_base: str = "http://localhost:8000/v1"   # openai backend
     api_key_env: str = "OPENAI_API_KEY"
     api_model: Optional[str] = None              # model id sent to API (defaults to name_or_path)
-    concurrency: int = 8                         # openai backend parallel requests
+    concurrency: int = 32                        # openai backend: parallel in-flight requests
     request_timeout: float = 300.0
     max_retries: int = 5
     image: ImageConfig = field(default_factory=ImageConfig)
@@ -79,7 +79,11 @@ class RunConfig:
     sampling: str = "random"                           # random | first | stratified
     stratify_by: Optional[str] = None                  # column for stratified sampling (default: task's group_by)
     seed: int = 1234
-    batch_size: int = 8
+    batch_size: Union[int, str] = 8                    # int, or "auto" (hf: start large, shrink on OOM)
+    inference_chunk: Optional[int] = None              # requests per backend call (default: backend decides)
+    prefetch: int = 2                                  # batches prepared ahead on a CPU thread
+    score_workers: Optional[int] = None                # parallel scorers for code execution (default: #CPUs)
+    gpu_monitor: bool = True                           # sample GPU utilisation/memory per task
     auto_reduce_batch: bool = True                     # halve batch size on CUDA OOM
     num_fewshot: Optional[int] = None                  # override per-task default
     mcq_mode: Optional[str] = None                     # generate | loglikelihood (override per task)
@@ -331,8 +335,8 @@ def _validate(cfg: BenchConfig) -> None:
         raise ValueError("run.mcq_mode must be generate|loglikelihood")
     if cfg.run.instruction_lang not in ("en", "native"):
         raise ValueError("run.instruction_lang must be en|native")
-    if cfg.run.batch_size < 1:
-        raise ValueError("run.batch_size must be >= 1")
+    if cfg.run.batch_size != "auto" and (not isinstance(cfg.run.batch_size, int) or cfg.run.batch_size < 1):
+        raise ValueError("run.batch_size must be a positive integer or 'auto'")
     if isinstance(cfg.run.tasks, str):
         cfg.run.tasks = [t.strip() for t in cfg.run.tasks.split(",") if t.strip()]
     for key, val in (("model.trust_remote_code", cfg.model.trust_remote_code),

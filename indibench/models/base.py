@@ -47,6 +47,17 @@ class BaseModel:
     def name(self) -> str:
         return self.cfg.name_or_path or self.cfg.backend
 
+    def inference_chunk(self, batch_size: int, modality: str = "text") -> int:
+        """How many requests the runner should hand over per call.
+
+        Static-batching backends (transformers) want exactly ``batch_size``; schedulers such as
+        vLLM or a remote server want far more in flight to keep the GPU saturated.
+        """
+        return batch_size
+
+    def reset_capacity(self) -> None:
+        """Forget any batch-size limit learned from OOMs (called at the start of each task)."""
+
     def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
         raise NotImplementedError
 

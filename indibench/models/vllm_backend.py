@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from indibench.config import GenerationConfig, ModelConfig
 from indibench.models.base import BaseModel, Request
@@ -54,10 +54,24 @@ class VLLMModel(BaseModel):
             mm_kwargs["min_pixels"] = cfg.image.min_pixels
         if mm_kwargs and cfg.extra.get("pass_pixel_limits_to_processor", False):
             kwargs["mm_processor_kwargs"] = mm_kwargs
-        kwargs.update({k: v for k, v in (cfg.extra or {}).items() if k != "pass_pixel_limits_to_processor"})
+        kwargs.update({k: v for k, v in (cfg.extra or {}).items() if k not in ("pass_pixel_limits_to_processor", "chunk")})
         self.llm = LLM(**kwargs)
         self.tokenizer = self.llm.get_tokenizer()
         self.supports_images = _vllm_is_multimodal(self.llm)
+
+    # vLLM's scheduler (continuous batching + paged KV cache) only reaches full utilisation with
+    # many requests in flight, so hand it large chunks rather than `batch_size` at a time.
+    _pil_ok: Optional[bool] = None
+
+    def inference_chunk(self, batch_size: int, modality: str = "text") -> int:
+        default = 256 if modality == "image" else 1024
+        return max(batch_size, int((self.cfg.extra or {}).get("chunk", default)))
+
+    def _image_part(self, img) -> Dict[str, Any]:
+        # Passing the PIL object skips a PNG encode + base64 round-trip per image (CPU-bound).
+        if self._pil_ok is not False:
+            return {"type": "image_pil", "image_pil": img}
+        return {"type": "image_url", "image_url": {"url": pil_to_data_uri(img, "JPEG")}}
 
     def _to_openai(self, req: Request) -> List[Dict[str, Any]]:
         msgs = []
@@ -67,8 +81,8 @@ class VLLMModel(BaseModel):
                 if p["type"] == "text":
                     parts.append({"type": "text", "text": p["text"]})
                 elif p["type"] == "image":
-                    parts.append({"type": "image_url", "image_url": {"url": pil_to_data_uri(p["image"], self.cfg.image.format)}})
-            if m["role"] == "system" or not any(p["type"] == "image_url" for p in parts):
+                    parts.append(self._image_part(p["image"]))
+            if m["role"] == "system" or not any(p["type"] in ("image_url", "image_pil") for p in parts):
                 msgs.append({"role": m["role"], "content": "\n".join(p["text"] for p in parts if p["type"] == "text")})
             else:
                 msgs.append({"role": m["role"], "content": parts})
@@ -92,7 +106,18 @@ class VLLMModel(BaseModel):
         if gen.enable_thinking is not None:
             chat_kwargs["chat_template_kwargs"] = {"enable_thinking": gen.enable_thinking}
         if self.cfg.chat_template:
-            outs = self.llm.chat(convs, self._params(gen, max_new), **chat_kwargs)
+            try:
+                outs = self.llm.chat(convs, self._params(gen, max_new), **chat_kwargs)
+                if any(r.images for r in requests):
+                    self._pil_ok = True
+            except Exception as e:
+                if self._pil_ok is None and any(r.images for r in requests) and "image_pil" in str(e).lower() + repr(e):
+                    log.info("This vLLM version has no image_pil content parts; sending images as JPEG data URIs")
+                    self._pil_ok = False
+                    convs = [self._to_openai(r) for r in requests]
+                    outs = self.llm.chat(convs, self._params(gen, max_new), **chat_kwargs)
+                else:
+                    raise
         else:
             prompts = ["\n\n".join(m["content"] if isinstance(m["content"], str) else "" for m in c) for c in convs]
             outs = self.llm.generate(prompts, self._params(gen, max_new), use_tqdm=False)

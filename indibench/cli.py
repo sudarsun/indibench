@@ -101,7 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--sampling", dest="run.sampling", choices=["random", "first", "stratified"])
     g.add_argument("--stratify-by", dest="run.stratify_by")
     g.add_argument("--seed", dest="run.seed", type=int)
-    g.add_argument("--batch-size", dest="run.batch_size", type=int)
+    g.add_argument("--batch-size", dest="run.batch_size", type=lambda v: v if v == "auto" else int(v),
+                   help="prompts per forward pass (hf); 'auto' = start large and shrink on OOM")
+    g.add_argument("--inference-chunk", dest="run.inference_chunk", type=int,
+                   help="requests per backend call (default: hf=batch size, vllm=1024 text/256 image, "
+                        "openai=4x concurrency)")
+    g.add_argument("--prefetch", dest="run.prefetch", type=int,
+                   help="batches prepared ahead on a CPU thread while the GPU works (default 2)")
+    g.add_argument("--no-gpu-monitor", dest="run.gpu_monitor", action="store_const", const=False,
+                   help="do not sample GPU utilisation during the run")
     g.add_argument("--num-fewshot", dest="run.num_fewshot", type=int)
     g.add_argument("--mcq-mode", dest="run.mcq_mode", choices=["generate", "loglikelihood"])
     g.add_argument("--instruction-lang", dest="run.instruction_lang", choices=["en", "native"])
