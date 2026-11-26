@@ -205,6 +205,7 @@ def check_instructions(response: str, ids: List[str], kwargs: List[Dict[str, Any
 @register_type("ifeval")
 class IFEvalTask(Task):
     default_metrics = ["prompt_strict", "prompt_loose"]
+    default_max_new_tokens = 1280
 
     def default_template(self) -> str:
         return "{prompt}"

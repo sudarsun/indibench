@@ -49,7 +49,13 @@ class ModelConfig:
 
 @dataclass
 class GenerationConfig:
-    max_new_tokens: int = 256
+    # "auto": each task uses its own budget (spec value or a per-type default), raised to fit the
+    # reference answers measured with the model's tokenizer. An integer is a minimum for every task.
+    max_new_tokens: Union[int, str] = "auto"
+    # Answers that stop because they hit the budget are regenerated with twice the budget, up to
+    # max_new_tokens_limit (and never beyond the model's context window).
+    extend_on_truncation: bool = True
+    max_new_tokens_limit: int = 8192
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: Optional[int] = None
@@ -177,7 +183,7 @@ HARDWARE_PROFILES: Dict[str, Dict[str, Any]] = {
         "model.max_model_len": 4096,
         "model.image.max_pixels": 448 * 28 * 28,
         "model.image.max_images": 4,
-        "generation.max_new_tokens": 192,
+        "generation.max_new_tokens_limit": 2048,   # 4k context
     },
 }
 
@@ -337,6 +343,11 @@ def _validate(cfg: BenchConfig) -> None:
         raise ValueError("run.instruction_lang must be en|native")
     if cfg.run.batch_size != "auto" and (not isinstance(cfg.run.batch_size, int) or cfg.run.batch_size < 1):
         raise ValueError("run.batch_size must be a positive integer or 'auto'")
+    mnt = cfg.generation.max_new_tokens
+    if mnt != "auto" and (isinstance(mnt, bool) or not isinstance(mnt, int) or mnt < 1):
+        raise ValueError("generation.max_new_tokens must be a positive integer or 'auto'")
+    if not isinstance(cfg.generation.max_new_tokens_limit, int) or cfg.generation.max_new_tokens_limit < 1:
+        raise ValueError("generation.max_new_tokens_limit must be a positive integer")
     if isinstance(cfg.run.tasks, str):
         cfg.run.tasks = [t.strip() for t in cfg.run.tasks.split(",") if t.strip()]
     for key, val in (("model.trust_remote_code", cfg.model.trust_remote_code),

@@ -8,6 +8,8 @@ import os
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
+from indibench.utils import fmt_duration
+
 
 def _fmt(v: Optional[float], digits: int = 1) -> str:
     if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -21,6 +23,19 @@ def _primary(res: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any
     return pm, m
 
 
+def _bench_seconds(payload: Dict[str, Any]) -> float:
+    return sum(((r.get("timing") or {}).get("seconds") or 0) for r in payload.get("results", {}).values())
+
+
+def _total_line(payload: Dict[str, Any]) -> str:
+    total = payload.get("total_s") or payload.get("elapsed_s") or 0
+    parts = []
+    if payload.get("model_load_s") is not None:
+        parts.append(f"model load {fmt_duration(payload['model_load_s'])}")
+    parts.append(f"benchmarks {fmt_duration(_bench_seconds(payload))}")
+    return f"total time: {fmt_duration(total)} ({', '.join(parts)})"
+
+
 def task_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = []
     for name, res in payload.get("results", {}).items():
@@ -28,6 +43,7 @@ def task_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if "error" in res or "skipped" in res:
             row["status"] = "error" if "error" in res else "skipped"
             row["note"] = (res.get("error") or res.get("skipped") or "")[:160]
+            row["seconds"] = (res.get("timing") or {}).get("seconds")
             rows.append(row)
             continue
         pm, m = _primary(res)
@@ -79,23 +95,25 @@ def render_markdown(payload: Dict[str, Any]) -> str:
     run = cfg.get("run", {})
     lines.append(f"- limit per task: {run.get('limit') or 'all'}, sampling: {run.get('sampling')}, seed: {run.get('seed')}, "
                  f"instruction_lang: {run.get('instruction_lang')}")
-    lines.append(f"- total time: {payload.get('elapsed_s', 0):.0f}s")
+    lines.append(f"- {_total_line(payload)}")
     for note in payload.get("hardware_notes") or []:
         lines.append(f"- ⚠ hardware: {note}")
     lines.append("")
     lines.append("## Results")
     lines.append("")
-    lines.append("| task | lang | n | metric | score | 95% CI | other metrics | time (s) |")
+    lines.append("| task | lang | n | metric | score | 95% CI | other metrics | time |")
     lines.append("|---|---|---:|---|---:|---|---|---:|")
     for r in task_rows(payload):
         if r["status"] in ("error", "skipped"):
-            lines.append(f"| {r['task']} | {r['lang']} | – | {r['status']} | – | – | {r['note'].replace('|', '/')} | – |")
+            lines.append(f"| {r['task']} | {r['lang']} | – | {r['status']} | – | – | {r['note'].replace('|', '/')} | "
+                         f"{fmt_duration(r.get('seconds')) if r.get('seconds') is not None else '–'} |")
             continue
         ci = f"[{_fmt(r['ci_low'])}, {_fmt(r['ci_high'])}]" if r.get("ci_low") is not None else ""
         others = ", ".join(f"{k}={_fmt(v)}" for k, v in (r.get("others") or {}).items())
         score = "predict-only" if r["status"] == "predict_only" else _fmt(r.get("value"))
         lines.append(f"| {r['task']} | {r['lang']} | {r.get('n')} | {r.get('metric') or ''} | {score} | {ci} | "
-                     f"{others} | {_fmt(r.get('seconds'), 0)} |")
+                     f"{others} | {fmt_duration(r.get('seconds'))} |")
+    lines.append(f"| **total** | | | | | | | **{fmt_duration(_bench_seconds(payload))}** |")
     langs, mat, metric_of = language_matrix(payload)
     if mat and (len(langs) > 1 or any(len(v) > 1 for v in mat.values())):
         lines += ["", "## Language matrix (primary metric)", ""]
@@ -161,17 +179,21 @@ def print_summary(payload: Dict[str, Any]) -> None:
     console = Console()
     t = Table(title=f"indibench — {payload.get('model', {}).get('name', '?')}", show_lines=False)
     for col, just in (("task", "left"), ("lang", "left"), ("n", "right"), ("metric", "left"),
-                      ("score", "right"), ("95% CI", "left"), ("other", "left")):
+                      ("score", "right"), ("95% CI", "left"), ("other", "left"), ("time", "right")):
         t.add_column(col, justify=just)
     for r in task_rows(payload):
+        secs = fmt_duration(r.get("seconds")) if r.get("seconds") is not None else "–"
         if r["status"] in ("error", "skipped"):
-            t.add_row(r["task"], r["lang"], "–", f"[red]{r['status']}[/red]", "–", "", r["note"][:70])
+            t.add_row(r["task"], r["lang"], "–", f"[red]{r['status']}[/red]", "–", "", r["note"][:70], secs)
             continue
         ci = f"[{_fmt(r['ci_low'])}, {_fmt(r['ci_high'])}]" if r.get("ci_low") is not None else ""
         others = " ".join(f"{k}={_fmt(v)}" for k, v in (r.get("others") or {}).items())
         score = "predict-only" if r["status"] == "predict_only" else f"[bold]{_fmt(r.get('value'))}[/bold]"
-        t.add_row(r["task"], r["lang"], str(r.get("n")), r.get("metric") or "", score, ci, others)
+        t.add_row(r["task"], r["lang"], str(r.get("n")), r.get("metric") or "", score, ci, others, secs)
+    t.add_section()
+    t.add_row("[bold]total[/bold]", "", "", "", "", "", "", f"[bold]{fmt_duration(_bench_seconds(payload))}[/bold]")
     console.print(t)
+    console.print(_total_line(payload))
     langs, mat, metric_of = language_matrix(payload)
     if mat and len(langs) > 1:
         m = Table(title="Language matrix (primary metric)")

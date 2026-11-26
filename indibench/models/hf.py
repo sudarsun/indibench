@@ -210,35 +210,63 @@ class HFModel(BaseModel):
         if self._cap is None or new < self._cap:
             log.warning("CUDA OOM at batch=%d -> using batch<=%d for the rest of this task", size, new)
             self._cap = new
-        self.torch.cuda.empty_cache()
+        self.release_memory()
         return new
 
+    def release_memory(self) -> None:
+        # Static/hybrid KV caches (Gemma-3, some Llama configs) are kept on the model between
+        # generate() calls and re-allocated larger when a later task needs longer outputs.
+        for attr in ("_cache", "_static_cache"):
+            if getattr(self.model, attr, None) is not None:
+                try:
+                    setattr(self.model, attr, None)
+                except Exception:
+                    pass
+        super().release_memory()
+
+    def count_tokens(self, texts: List[str]) -> List[int]:
+        if not texts:
+            return []
+        return [len(x) for x in self.tokenizer(list(texts), add_special_tokens=False)["input_ids"]]
+
+    def context_length(self) -> Optional[int]:
+        native = None
+        c = getattr(self.model, "config", None)
+        for cfg in (getattr(c, "text_config", None), c):
+            v = getattr(cfg, "max_position_embeddings", None) if cfg is not None else None
+            if isinstance(v, int) and v > 0:
+                native = v
+                break
+        vals = [x for x in (self.cfg.max_model_len, native) if x]
+        return int(min(vals)) if vals else None
+
     # ------------------------------------------------------------------ generation
-    def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
-        outputs: List[Optional[str]] = [None] * len(requests)
+    def generate_ex(self, requests: List[Request], gen: GenerationConfig) -> List[Tuple[str, bool]]:
+        outputs: List[Optional[Tuple[str, bool]]] = [None] * len(requests)
         # Never mix image and text-only prompts in one processor call. Within each group,
         # sort by prompt size so a batch holds similar lengths (less padding = more useful work).
         with_img = sorted((i for i, r in enumerate(requests) if r.images), key=lambda i: self._cost(requests[i]))
         without = sorted((i for i, r in enumerate(requests) if not r.images), key=lambda i: self._cost(requests[i]))
         for group in (with_img, without):
             for sub in self._split(group):
-                for i, text in zip(sub, self._generate_safe([requests[i] for i in sub], gen)):
-                    outputs[i] = text
-        return [o or "" for o in outputs]
+                for i, res in zip(sub, self._generate_safe([requests[i] for i in sub], gen)):
+                    outputs[i] = res
+        return [o or ("", False) for o in outputs]
 
-    def _generate_safe(self, batch: List[Request], gen: GenerationConfig) -> List[str]:
+    def _generate_safe(self, batch: List[Request], gen: GenerationConfig) -> List[Tuple[str, bool]]:
         torch = self.torch
         try:
             return self._generate_batch(batch, gen)
         except torch.cuda.OutOfMemoryError:
             if len(batch) == 1:
-                torch.cuda.empty_cache()
                 raise
-            n = self._note_oom(len(batch))
-            out: List[str] = []
-            for i in range(0, len(batch), n):
-                out.extend(self._generate_safe(batch[i:i + n], gen))
-            return out
+        # Retry *outside* the except block: while the exception is being handled its traceback
+        # keeps the failed batch's GPU tensors alive, so splitting there would OOM again.
+        n = self._note_oom(len(batch))
+        out: List[Tuple[str, bool]] = []
+        for i in range(0, len(batch), n):
+            out.extend(self._generate_safe(batch[i:i + n], gen))
+        return out
 
     def _generate_batch(self, batch: List[Request], gen: GenerationConfig) -> List[str]:
         torch = self.torch
@@ -247,8 +275,8 @@ class HFModel(BaseModel):
         inputs = self._encode(texts, images).to(self.model.device)
         if "pixel_values" in inputs and self.dtype != "auto":
             inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
-        max_new = max((r.max_new_tokens or gen.max_new_tokens) for r in batch)
-        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id, "max_length": None}
+        max_new = max(int(r.max_new_tokens or 512) for r in batch)
+        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id}
         if gen.temperature and gen.temperature > 0:
             kw.update(do_sample=True, temperature=gen.temperature, top_p=gen.top_p)
             if gen.top_k:
@@ -263,7 +291,24 @@ class HFModel(BaseModel):
             out = self.model.generate(**inputs, **kw)
         new_tokens = out[:, inputs["input_ids"].shape[1]:]
         decoded = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
-        return [_cut_at_stop(d, gen.stop) for d in decoded]
+        truncated = self._truncated(new_tokens, max_new)
+        del out, inputs
+        return [(_cut_at_stop(d, gen.stop), t) for d, t in zip(decoded, truncated)]
+
+    def _truncated(self, new_tokens, max_new: int) -> List[bool]:
+        """A row is truncated when it used the whole budget and its last token is not an
+        end-of-sequence token (finished rows are padded after their EOS)."""
+        n = new_tokens.shape[0]
+        if new_tokens.shape[1] < max_new:
+            return [False] * n
+        stop_ids = set()
+        for src in (getattr(self.model, "generation_config", None), self.tokenizer):
+            e = getattr(src, "eos_token_id", None)
+            stop_ids.update(e if isinstance(e, (list, tuple)) else [e] if e is not None else [])
+        if self.tokenizer.pad_token_id is not None:
+            stop_ids.add(self.tokenizer.pad_token_id)
+        last = new_tokens[:, -1].tolist()
+        return [int(t) not in stop_ids for t in last]
 
     # ------------------------------------------------------------------ log-likelihood
     def loglikelihood(self, requests: List[Request]) -> List[List[Tuple[float, int]]]:
@@ -292,13 +337,12 @@ class HFModel(BaseModel):
             return self._ll_batch(batch)
         except torch.cuda.OutOfMemoryError:
             if len(batch) == 1:
-                torch.cuda.empty_cache()
                 raise
-            n = self._note_oom(len(batch))
-            out: List[Tuple[float, int]] = []
-            for i in range(0, len(batch), n):
-                out.extend(self._ll_safe(batch[i:i + n]))
-            return out
+        n = self._note_oom(len(batch))   # outside the except block, see _generate_safe
+        out: List[Tuple[float, int]] = []
+        for i in range(0, len(batch), n):
+            out.extend(self._ll_safe(batch[i:i + n]))
+        return out
 
     def _ll_batch(self, batch) -> List[Tuple[float, int]]:
         torch = self.torch
@@ -324,6 +368,7 @@ class HFModel(BaseModel):
             logp = torch.log_softmax(logits[j, n_ctx - 1:L - 1].float(), dim=-1)
             tgt = enc["input_ids"][j, n_ctx:L]
             out.append((float(logp.gather(1, tgt[:, None]).sum()), int(tgt.shape[0])))
+        del logits, enc
         return out
 
     def info(self) -> Dict[str, Any]:
@@ -347,8 +392,7 @@ class HFModel(BaseModel):
 
     def close(self) -> None:
         del self.model
-        if self.torch.cuda.is_available():
-            self.torch.cuda.empty_cache()
+        super().release_memory()
 
 
 def _cut_at_stop(text: str, stops: List[str]) -> str:

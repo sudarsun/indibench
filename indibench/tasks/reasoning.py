@@ -171,6 +171,7 @@ class MathTask(Task):
     text after a marker in the gold (GSM8K); ``answer_boxed: true`` extracts ``\\boxed{}`` from a
     gold solution.
     """
+    default_max_new_tokens = 2048
 
     default_metrics = ["accuracy"]
 
@@ -277,6 +278,7 @@ class CodeTask(Task):
     ``subtype: humaneval`` -> fields ``prompt``, ``test``, ``entry_point``
     ``subtype: mbpp``      -> fields ``prompt`` (task text), ``tests`` (list of asserts), ``imports``
     """
+    default_max_new_tokens = 1024
 
     default_metrics = ["pass@1"]
     parallel_scoring = True        # unit tests run in subprocesses -> score a batch concurrently
@@ -402,6 +404,7 @@ def jee_score(qtype: str, pred: Optional[str], gold: str) -> float:
 @register_type("jeebench")
 class JEEBenchTask(Task):
     default_metrics = ["score", "exact"]
+    default_max_new_tokens = 4096
 
     def default_template(self) -> str:
         return "{instruction}\n\nProblem: {question}"

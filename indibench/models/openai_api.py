@@ -75,11 +75,11 @@ class OpenAIModel(BaseModel):
             msgs.append({"role": m["role"], "content": parts})
         return msgs
 
-    def _one(self, req: Request, gen: GenerationConfig) -> str:
+    def _one(self, req: Request, gen: GenerationConfig):
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "messages": self._messages(req),
-            "max_tokens": req.max_new_tokens or gen.max_new_tokens,
+            "max_tokens": int(req.max_new_tokens or 512),
             "temperature": gen.temperature,
             "top_p": gen.top_p,
         }
@@ -90,16 +90,16 @@ class OpenAIModel(BaseModel):
         payload.update(self.cfg.extra or {})
         resp = chat_completion(self.cfg.api_base, self.api_key, payload, self.cfg.request_timeout, self.cfg.max_retries)
         try:
-            msg = resp["choices"][0]["message"]
-            return msg.get("content") or ""
-        except (KeyError, IndexError):
+            choice = resp["choices"][0]
+            return (choice["message"].get("content") or ""), choice.get("finish_reason") == "length"
+        except (KeyError, IndexError, AttributeError):
             log.warning("Malformed API response: %s", str(resp)[:300])
-            return ""
+            return "", False
 
     def inference_chunk(self, batch_size: int, modality: str = "text") -> int:
         # Keep the server's scheduler fed: several requests per worker thread in flight.
         return max(batch_size, self.cfg.concurrency * 4)
 
-    def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
+    def generate_ex(self, requests: List[Request], gen: GenerationConfig):
         with ThreadPoolExecutor(max_workers=max(1, self.cfg.concurrency)) as ex:
             return list(ex.map(lambda r: self._one(r, gen), requests))

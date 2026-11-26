@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import gc
+from typing import Any, Dict, List, Optional, Tuple
 
 from indibench.config import GenerationConfig, ModelConfig
 
@@ -59,7 +60,31 @@ class BaseModel:
         """Forget any batch-size limit learned from OOMs (called at the start of each task)."""
 
     def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
-        raise NotImplementedError
+        if type(self).generate_ex is BaseModel.generate_ex:
+            raise NotImplementedError
+        return [text for text, _ in self.generate_ex(requests, gen)]
+
+    def generate_ex(self, requests: List[Request], gen: GenerationConfig) -> List[Tuple[str, bool]]:
+        """Like ``generate`` but also reports, per request, whether the answer stopped only because
+        it reached ``max_new_tokens`` (truncated). Backends that cannot tell report False."""
+        return [(text, False) for text in self.generate(requests, gen)]
+
+    def count_tokens(self, texts: List[str]) -> List[int]:
+        """Token counts with the model's tokenizer. This fallback over-estimates on purpose:
+        ~4 Latin characters per token, 1 token per character for other scripts."""
+        out = []
+        for t in texts:
+            latin = sum(1 for ch in t if ord(ch) < 0x250)
+            out.append(int(latin / 4 + (len(t) - latin)) + 1)
+        return out
+
+    def context_length(self) -> Optional[int]:
+        """Maximum prompt + output tokens, if known."""
+        return self.cfg.max_model_len or None
+
+    def release_memory(self) -> None:
+        """Free cached GPU memory between tasks (called by the runner after every task)."""
+        release_cuda_memory()
 
     def loglikelihood(self, requests: List[Request]) -> List[List[float]]:
         """Return, per request, the summed log-prob of each continuation."""
@@ -98,3 +123,23 @@ def _load(cfg: ModelConfig) -> BaseModel:
 
         return DummyModel(cfg)
     raise ValueError(f"Unknown backend {b!r}")
+
+
+def release_cuda_memory() -> None:
+    """Collect Python garbage (reference cycles from exceptions/tracebacks can keep GPU tensors
+    alive) and return the allocator's unused cached blocks to the driver."""
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass

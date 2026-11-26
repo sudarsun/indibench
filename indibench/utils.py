@@ -167,3 +167,15 @@ def write_json(path: str, obj: Any) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, ensure_ascii=False, indent=2, default=str)
+
+
+def fmt_duration(seconds) -> str:
+    """12.3 -> '12.3s', 754 -> '12m 34s', 7384 -> '2h 03m 04s'."""
+    if seconds is None:
+        return "–"
+    s = float(seconds)
+    if s < 60:
+        return f"{s:.1f}s"
+    m, sec = divmod(int(round(s)), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m {sec:02d}s" if h else f"{m}m {sec:02d}s"

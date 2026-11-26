@@ -6,7 +6,9 @@ model:
   dtype: bfloat16
   attn_implementation: sdpa          # flash_attention_2 if flash-attn is installed
 generation:
-  max_new_tokens: 256
+  max_new_tokens: auto          # per-task budget, sized to the reference answers; an integer = minimum
+  max_new_tokens_limit: 8192    # ceiling, incl. regenerating answers that hit the budget
+  extend_on_truncation: true
 run:
   tasks: [tamil]                     # tamil_text + tamil_vision + English anchors
   limit: 200                         # per task

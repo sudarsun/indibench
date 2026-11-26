@@ -99,15 +99,16 @@ class VLLMModel(BaseModel):
         kw.update(extra)
         return self.SamplingParams(**kw)
 
-    def generate(self, requests: List[Request], gen: GenerationConfig) -> List[str]:
+    def generate_ex(self, requests: List[Request], gen: GenerationConfig):
         convs = [self._to_openai(r) for r in requests]
-        max_new = max((r.max_new_tokens or gen.max_new_tokens) for r in requests)
+        # one SamplingParams per request, so each answer gets its own token budget
+        params = [self._params(gen, int(r.max_new_tokens or 512)) for r in requests]
         chat_kwargs: Dict[str, Any] = {"use_tqdm": False}
         if gen.enable_thinking is not None:
             chat_kwargs["chat_template_kwargs"] = {"enable_thinking": gen.enable_thinking}
         if self.cfg.chat_template:
             try:
-                outs = self.llm.chat(convs, self._params(gen, max_new), **chat_kwargs)
+                outs = self.llm.chat(convs, params, **chat_kwargs)
                 if any(r.images for r in requests):
                     self._pil_ok = True
             except Exception as e:
@@ -115,13 +116,37 @@ class VLLMModel(BaseModel):
                     log.info("This vLLM version has no image_pil content parts; sending images as JPEG data URIs")
                     self._pil_ok = False
                     convs = [self._to_openai(r) for r in requests]
-                    outs = self.llm.chat(convs, self._params(gen, max_new), **chat_kwargs)
+                    outs = self.llm.chat(convs, params, **chat_kwargs)
                 else:
                     raise
         else:
             prompts = ["\n\n".join(m["content"] if isinstance(m["content"], str) else "" for m in c) for c in convs]
-            outs = self.llm.generate(prompts, self._params(gen, max_new), use_tqdm=False)
-        return [o.outputs[0].text if o.outputs else "" for o in outs]
+            outs = self.llm.generate(prompts, params, use_tqdm=False)
+        return [(o.outputs[0].text, getattr(o.outputs[0], "finish_reason", None) == "length")
+                if o.outputs else ("", False) for o in outs]
+
+    def count_tokens(self, texts: List[str]) -> List[int]:
+        try:
+            return [len(x) for x in self.tokenizer(list(texts), add_special_tokens=False)["input_ids"]]
+        except Exception:
+            return super().count_tokens(texts)
+
+    def context_length(self) -> Optional[int]:
+        try:
+            return int(self.llm.llm_engine.model_config.max_model_len)
+        except Exception:
+            return super().context_length()
+
+    def release_memory(self) -> None:
+        # vLLM pre-allocates its KV cache once; only the prefix / multimodal caches can be dropped.
+        for name in ("reset_prefix_cache", "reset_mm_cache"):
+            fn = getattr(self.llm, name, None)
+            if fn:
+                try:
+                    fn()
+                except Exception:
+                    pass
+        super().release_memory()
 
     def loglikelihood(self, requests: List[Request]) -> List[List[Tuple[float, int]]]:
         """Score continuations with ``prompt_logprobs`` (text-only prompts)."""

@@ -26,6 +26,7 @@ RESOURCES = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources"
 @register_type("mmmu")
 class MMMUTask(Task):
     """MMMU (validation): interleaved ``<image n>`` placeholders, MC and open questions."""
+    default_max_new_tokens = 512
 
     default_metrics = ["accuracy"]
     needs_images_default = True
@@ -109,6 +110,7 @@ def _open_match(pred: str, gold: str) -> bool:
 @register_type("mathvista")
 class MathVistaTask(Task):
     """MathVista testmini, rule-based answer extraction (no GPT extractor needed)."""
+    default_max_new_tokens = 512
 
     default_metrics = ["accuracy"]
     needs_images_default = True
@@ -199,6 +201,8 @@ class SyntheticOCRTask(Task):
     Text comes from a built-in sentence list (``text_source: builtin``) or any dataset
     column (``text_source: {dataset spec..., field: text}``). Scored by grapheme CER.
     """
+    default_max_new_tokens = 256
+    scale_to_reference = True
 
     default_metrics = ["cer", "char_f1", "exact_match"]
     needs_images_default = True

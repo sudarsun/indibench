@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -50,12 +51,118 @@ def _csv(v: str) -> List[str]:
     return [x.strip() for x in v.split(",") if x.strip()]
 
 
+def _config_default(dest: str) -> Any:
+    """Built-in default of a config key such as 'generation.max_new_tokens'."""
+    from indibench.config import BenchConfig
+
+    obj: Any = BenchConfig()
+    for part in dest.split("."):
+        if not hasattr(obj, part):
+            return argparse.SUPPRESS
+        obj = getattr(obj, part)
+    return obj
+
+
+def _show(v: Any) -> str:
+    if v is None:
+        return "unset"
+    if isinstance(v, bool):
+        return str(v).lower()
+    if isinstance(v, (list, tuple)):
+        return ",".join(map(str, v)) if v else "none"
+    if isinstance(v, dict):
+        return "{}" if not v else json.dumps(v)
+    return str(v)
+
+
+# How an unset (None) built-in default behaves, in words.
+_DEFAULT_TEXT = {
+    "run.limit": "all rows", "run.languages": "all", "run.modalities": "text and image",
+    "run.tasks": "required", "model.name_or_path": "required (except backend=dummy)",
+    "model.quantization": "none", "trust_remote_code": "false", "run.trust_remote_code": "false",
+    "model.max_model_len": "model's own", "model.max_gpu_memory_gb": "no cap",
+    "run.run_name": "<model>__<timestamp>", "run.num_fewshot": "per task", "run.mcq_mode": "per task",
+    "run.stratify_by": "task's group_by", "model.system_prompt": "none",
+    "generation.enable_thinking": "chat template decides", "model.api_base": None,
+}
+
+# Help for options that were defined without one (so that their default is shown too).
+_HELP = {
+    "--backend": "hf | vllm | openai | dummy", "--dtype": "bfloat16 | float16 | float32 | auto",
+    "--max-model-len": "context window (prompt + answer) in tokens",
+    "--max-images": "images per prompt; extra images are dropped",
+    "--concurrency": "openai backend: requests in flight", "--system-prompt": "system message for every prompt",
+    "--temperature": "0 = greedy decoding", "--enable-thinking": "turn on reasoning mode (Qwen3 etc.)",
+    "--disable-thinking": "turn off reasoning mode", "--sampling": "random | first | stratified",
+    "--stratify-by": "column to stratify on", "--seed": "sampling seed",
+    "--num-fewshot": "few-shot examples (tasks that support it)",
+    "--mcq-mode": "generate (parse the answer) | loglikelihood (score each option)",
+    "--instruction-lang": "en | native (Tamil/Hindi instructions)", "--output-dir": "where run folders go",
+    "--no-resume": "start over instead of reusing saved predictions", "--streaming": "stream datasets",
+    "--bootstrap": "bootstrap resamples for 95%% CIs (0 = off)", "--log-level": "DEBUG | INFO | WARNING",
+    "--lang": "filter by language", "--tag": "filter by tag", "--task-file": "extra task-spec YAML (repeatable)",
+    "--json": "print JSON", "-n": "number of samples", "--rows": "rows to load per task",
+    "--languages": "filter by language", "--text-only": "skip vision tasks", "--exclude": "drop tasks",
+    "--narrative-api-base": "endpoint for --narrative-model",
+    "--narrative-api-key-env": "environment variable with the API key", "--format": "html | md",
+}
+
+
+def _fill_help(parser: argparse.ArgumentParser) -> None:
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            for sp in a.choices.values():
+                _fill_help(sp)
+        elif a.help is None and a.option_strings:
+            for o in a.option_strings:
+                if o in _HELP:
+                    a.help = _HELP[o]
+                    break
+            else:
+                a.help = a.dest.replace("_", " ")
+
+
+class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Appends '[default: X]' to every option. Options that map to a config key (dest contains a
+    dot) show the built-in config default, since their argparse default is None so that YAML values
+    are not overwritten."""
+
+    def __init__(self, prog):
+        super().__init__(prog, max_help_position=34, width=min(110, shutil.get_terminal_size().columns))
+
+    def _get_help_string(self, action):
+        h = action.help or ""
+        if action.help is argparse.SUPPRESS or "default:" in h or action.dest in ("help", "version", "overrides"):
+            return h
+        if action.option_strings == []:          # positionals
+            return h
+        dotted = "." in action.dest or action.dest in ("hardware_profile", "trust_remote_code")
+        d = _config_default(action.dest) if dotted else action.default
+        if d is argparse.SUPPRESS:
+            return h
+        if d in (None, "") and _DEFAULT_TEXT.get(action.dest):
+            return f"{h} [default: {_DEFAULT_TEXT[action.dest]}]".strip()
+        if action.nargs == 0:                     # flags: is this behaviour on by default?
+            const = getattr(action, "const", True)
+            if action.__class__.__name__ in ("_StoreTrueAction",):
+                const = True
+            on = (d == const) if dotted else bool(d) == bool(const) and d is not None and d is not False
+            return f"{h} [default: {'on' if on else 'off'}]".strip()
+        if d is None and not dotted:
+            return h
+        return f"{h} [default: {_show(d)}]".strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="indibench", description="Benchmark (multimodal) LLMs on Tamil, Indic and vision tasks.")
+    p = argparse.ArgumentParser(prog="indibench", formatter_class=_HelpFormatter,
+                                description="Benchmark (multimodal) LLMs on Tamil, Indic and vision tasks.")
     p.add_argument("--version", action="version", version=f"indibench {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="run benchmarks", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    r = sub.add_parser("run", help="run benchmarks", formatter_class=_HelpFormatter,
+                       description="Run benchmarks.\n\nDefaults shown are the built-in values. A YAML file (-c), the\n"
+                                   "hardware profile (auto-detected GPU) and --set can change them; print the\n"
+                                   "resolved configuration with --dry-run.")
     r.add_argument("-c", "--config", help="YAML config file (CLI flags override it)")
     g = r.add_argument_group("model")
     g.add_argument("-m", "--model", dest="model.name_or_path", help="HF model id / local path / API model name")
@@ -77,11 +184,18 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--concurrency", dest="model.concurrency", type=int)
     g.add_argument("--system-prompt", dest="model.system_prompt")
     g.add_argument("--hardware-profile", dest="hardware_profile",
-                   help="auto (default) | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200")
+                   help="auto | none | rtx2080ti | rtx3090 | rtx4090 | l40s | a100-40g | a100-80g | h100 | h200")
     g.add_argument("--max-gpu-memory", dest="model.max_gpu_memory_gb", type=float,
                    help="hf: cap GiB per GPU and offload the rest to CPU RAM")
     g = r.add_argument_group("generation")
-    g.add_argument("--max-new-tokens", dest="generation.max_new_tokens", type=int)
+    g.add_argument("--max-new-tokens", dest="generation.max_new_tokens", metavar="auto|N",
+                   type=lambda v: v if v == "auto" else int(v),
+                   help="output budget. auto: per task (its own value or a per-type default), raised to fit "
+                        "the reference answers; N: at least N tokens for every task")
+    g.add_argument("--max-new-tokens-limit", dest="generation.max_new_tokens_limit", type=int, metavar="N",
+                   help="ceiling for any answer, including regenerations of truncated answers")
+    g.add_argument("--no-extend-on-truncation", dest="generation.extend_on_truncation", action="store_const",
+                   const=False, help="do not regenerate answers that hit the budget with a doubled budget")
     g.add_argument("--temperature", dest="generation.temperature", type=float)
     g.add_argument("--enable-thinking", dest="generation.enable_thinking", action="store_const", const=True)
     g.add_argument("--disable-thinking", dest="generation.enable_thinking", action="store_const", const=False)
@@ -104,10 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--batch-size", dest="run.batch_size", type=lambda v: v if v == "auto" else int(v),
                    help="prompts per forward pass (hf); 'auto' = start large and shrink on OOM")
     g.add_argument("--inference-chunk", dest="run.inference_chunk", type=int,
-                   help="requests per backend call (default: hf=batch size, vllm=1024 text/256 image, "
-                        "openai=4x concurrency)")
+                   help="requests per backend call [default: hf = batch size, vllm = 1024 text / 256 image, "
+                        "openai = 4 x concurrency]")
     g.add_argument("--prefetch", dest="run.prefetch", type=int,
-                   help="batches prepared ahead on a CPU thread while the GPU works (default 2)")
+                   help="batches prepared ahead on a CPU thread while the GPU works")
     g.add_argument("--no-gpu-monitor", dest="run.gpu_monitor", action="store_const", const=False,
                    help="do not sample GPU utilisation during the run")
     g.add_argument("--num-fewshot", dest="run.num_fewshot", type=int)
@@ -124,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="override any config key, e.g. --set model.extra.mode=oracle")
     r.add_argument("--dry-run", action="store_true", help="resolve config + tasks, print, and exit")
 
-    ls = sub.add_parser("list", help="list tasks and groups")
+    ls = sub.add_parser("list", formatter_class=_HelpFormatter, help="list tasks and groups")
     ls.add_argument("--lang", type=_csv)
     ls.add_argument("--tag", type=_csv)
     ls.add_argument("--modality", type=_csv, help="text and/or image")
@@ -132,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--task-file", action="append", default=[])
     ls.add_argument("--json", action="store_true")
 
-    ins = sub.add_parser("inspect", help="show dataset schema and rendered prompts for a task (no model)")
+    ins = sub.add_parser("inspect", formatter_class=_HelpFormatter, help="show dataset schema and rendered prompts for a task (no model)")
     ins.add_argument("task")
     ins.add_argument("-n", type=int, default=2)
     ins.add_argument("--instruction-lang", choices=["en", "native"], default="en")
@@ -142,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("--trust-remote-code", type=_bool, nargs="?", const=True, metavar="true|false",
                      help="run dataset loading scripts (requires datasets<4)")
 
-    ck = sub.add_parser("check", help="verify that tasks load and parse (downloads data, no model)")
+    ck = sub.add_parser("check", formatter_class=_HelpFormatter, help="verify that tasks load and parse (downloads data, no model)")
     ck.add_argument("tasks", type=_csv)
     ck.add_argument("--languages", type=_csv)
     ck.add_argument("--modality", type=_csv, help="text and/or image")
@@ -153,10 +267,10 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("--trust-remote-code", type=_bool, nargs="?", const=True, metavar="true|false",
                     help="run dataset loading scripts (requires datasets<4)")
 
-    rp = sub.add_parser("report", help="re-render reports for a finished run")
+    rp = sub.add_parser("report", formatter_class=_HelpFormatter, help="re-render reports for a finished run")
     rp.add_argument("run_dir")
 
-    cp = sub.add_parser("compare", help="compare several runs")
+    cp = sub.add_parser("compare", formatter_class=_HelpFormatter, help="compare several runs")
     cp.add_argument("runs", nargs="+")
     cp.add_argument("-o", "--output", help="write markdown to file")
 
@@ -164,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
         if a.dest and "." in a.dest and a.metavar is None and a.nargs != 0 and a.const is None:
             a.metavar = a.dest.split(".")[-1].upper()
 
-    sm = sub.add_parser("summary", help="one-page executive summary (HTML/PDF/Markdown) for business readers")
+    sm = sub.add_parser("summary", formatter_class=_HelpFormatter, help="one-page executive summary (HTML/PDF/Markdown) for business readers")
     sm.add_argument("run_dir", help="run folder or results.json")
     sm.add_argument("-b", "--baseline", help="another run to compare against (shows deltas per capability)")
     sm.add_argument("-o", "--output-dir", help="where to write (default: the run folder)")
@@ -175,13 +289,14 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--narrative-api-base", default="http://localhost:8000/v1")
     sm.add_argument("--narrative-api-key-env", default="OPENAI_API_KEY")
 
-    ev = sub.add_parser("env", help="show GPU / library info, capability checks and model-fit advice")
+    ev = sub.add_parser("env", formatter_class=_HelpFormatter, help="show GPU / library info, capability checks and model-fit advice")
     ev.add_argument("-m", "--model", help="model id to check memory fit for, e.g. Qwen/Qwen2.5-VL-7B-Instruct")
     ev.add_argument("--quantization", help="4bit | 8bit | awq | gptq | fp8")
     ev.add_argument("--dtype", default="bfloat16")
 
-    ic = sub.add_parser("init-config", help="write an annotated example config")
+    ic = sub.add_parser("init-config", formatter_class=_HelpFormatter, help="write an annotated example config")
     ic.add_argument("path")
+    _fill_help(p)
     return p
 
 
@@ -454,7 +569,9 @@ model:
   # api_base: http://localhost:8000/v1   # for backend: openai (vllm serve / sglang / ollama)
 
 generation:
-  max_new_tokens: 256
+  max_new_tokens: auto          # per-task budget, sized to the reference answers; an integer = minimum
+  max_new_tokens_limit: 8192    # ceiling, incl. regenerating answers that hit the budget
+  extend_on_truncation: true
   temperature: 0.0
   strip_thinking: true
 

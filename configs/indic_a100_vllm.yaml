@@ -8,7 +8,9 @@ model:
   gpu_memory_utilization: 0.90
   image: {max_images: 4}
 generation:
-  max_new_tokens: 256
+  max_new_tokens: auto          # per-task budget, sized to the reference answers; an integer = minimum
+  max_new_tokens_limit: 8192    # ceiling, incl. regenerating answers that hit the budget
+  extend_on_truncation: true
 run:
   tasks: [indic_text, indic_vision]
   languages: [indic_major]           # ta, hi, te, kn, ml, bn, mr, gu

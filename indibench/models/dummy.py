@@ -45,6 +45,12 @@ class DummyModel(BaseModel):
                 outs.append(f"Answer: {rng.choice('ABCD')}" if "A." in last or "(A)" in last else rng.choice(words))
         return outs
 
+    def generate_ex(self, requests: List[Request], gen: GenerationConfig):
+        # extra.needs_tokens: N simulates answers that need N tokens (truncated below that budget)
+        need = (self.cfg.extra or {}).get("needs_tokens")
+        texts = self.generate(requests, gen)
+        return [(t, bool(need) and int(r.max_new_tokens or 0) < int(need)) for t, r in zip(texts, requests)]
+
     def loglikelihood(self, requests: List[Request]) -> List[List[Tuple[float, int]]]:
         out = []
         for r in requests:

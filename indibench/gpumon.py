@@ -131,3 +131,16 @@ def utilisation_hints(stats: Optional[Dict[str, Any]], backend: str, batch_size:
         hints.append("frequent idle gaps on an image task suggest CPU-bound image loading; lower "
                      "--max-pixels or raise --prefetch 4")
     return hints
+
+
+def gpu_memory_used_gb() -> Optional[float]:
+    """GPU memory in use right now on the visible GPUs (max over devices), from NVML/nvidia-smi.
+    Unlike torch's counters this also sees memory held by other processes such as vLLM workers."""
+    try:
+        mon = GPUMonitor()
+        if not mon.available:
+            return None
+        s = mon._sample()
+        return max(x[1] for x in s) if s else None
+    except Exception:
+        return None

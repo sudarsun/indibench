@@ -115,12 +115,14 @@ caps the samples per task.
 
 ## 4. Configuration
 
-Run `indibench init-config my.yaml` for a fully annotated file. The sections and their key settings:
+Run `indibench init-config my.yaml` for a fully annotated file. `indibench run --help` lists every
+flag with its built-in default; `--dry-run` prints the values after your YAML and the hardware
+profile have been applied. The sections and their key settings:
 
 | section | key settings |
 |---|---|
 | `model` | `backend`, `name_or_path`, `trust_remote_code`, `supports_images` (`false` declares a text-only model, which drops vision tasks), `dtype`, `quantization` (`4bit`/`8bit` for hf; `awq`/`gptq`/`fp8` for vllm), `attn_implementation`, `max_model_len`, `gpu_memory_utilization`, `system_prompt`, `image.max_pixels`, `image.max_images`, `api_base`, `concurrency`, `extra` (passed to `from_pretrained` / `vllm.LLM`) |
-| `generation` | `max_new_tokens` (tasks may set their own), `temperature`, `top_p`, `stop`, `strip_thinking`, `enable_thinking` |
+| `generation` | `max_new_tokens` (`auto` or a minimum, see §7b), `max_new_tokens_limit`, `extend_on_truncation`, `temperature`, `top_p`, `stop`, `strip_thinking`, `enable_thinking` |
 | `run` | `tasks`, `languages`, `trust_remote_code` (datasets), `modalities` (`[text]` for text-only models), `exclude`, `limit`, `sampling`, `stratify_by`, `seed`, `batch_size`, `num_fewshot`, `mcq_mode`, `instruction_lang`, `output_dir`, `run_name`, `resume`, `bootstrap`, `task_files`, `streaming`, `max_input_chars` |
 | `trust_remote_code` | `true`/`false` shorthand that sets both `model.trust_remote_code` and `run.trust_remote_code` (see §9). |
 | `hardware_profile` | `auto` (the default) detects the GPU. You can also give `rtx2080ti`, `rtx3090`, `rtx4090`, `l40s`, `a100-40g`, `a100-80g`, `h100`, `h200` or `none`. A profile only fills in keys you have not set yourself. |
@@ -276,8 +278,8 @@ indibench run -c configs/rtx2080ti_hf.yaml        # one config per GPU class: rt
   `device_map=auto`. For vLLM, use `--set model.tensor_parallel_size=2`.
 * `--mcq-mode loglikelihood` scores MCQ options by log-probability instead of parsing generated text.
   It works on the hf backend (text or images) and on vllm for text-only prompts.
-* For reasoning models, use `--disable-thinking` or raise `--max-new-tokens`. `<think>` blocks are
-  stripped before scoring.
+* For reasoning models, use `--disable-thinking`, or let the output budget grow (§7b). `<think>`
+  blocks are stripped before scoring.
 
 ### 7a. Keeping the GPU busy
 
@@ -322,6 +324,45 @@ indibench run -c configs/tamil_l40s_hf.yaml --batch-size auto --prefetch 4
 indibench run -c configs/indic_a100_vllm.yaml --inference-chunk 2048
 watch -n1 nvidia-smi        # or: nvtop
 ```
+
+### 7b. Output length (`max_new_tokens`)
+
+A fixed budget such as 256 tokens cuts off Tamil summaries and translations, which need several
+times more tokens than English for the same text, as well as step-by-step reasoning. With the
+default `--max-new-tokens auto`, the budget adapts in three steps:
+
+1. **Starting budget per task.** A task uses the `max_new_tokens` in its spec, or a default for its
+   type: 128 for short-answer QA, 256 for multiple choice and OCR, 512 for translation and
+   summaries, 1024 for code, 1280 for IFEval, 2048 for math and 4096 for JEE.
+   `--enable-thinking` raises every task to at least 2048.
+2. **Sized to the references.** For tasks scored against reference text (translation,
+   summarisation, QA, OCR), indibench counts the reference answers with **the model's own
+   tokenizer**. If 95% of them need more than the starting budget, the budget is raised to
+   1.3 × that length.
+3. **Truncated answers get more room.** An answer that stopped only because it used its whole
+   budget is generated again with twice the budget, until it finishes or reaches
+   `--max-new-tokens-limit` (default 8192, 2048 on the RTX 2080 Ti profile) or the model's
+   context window. Answers stuck repeating themselves are not extended. Only the truncated
+   answers are regenerated.
+
+`--max-new-tokens N` sets a minimum for every task. `--no-extend-on-truncation` turns step 3 off.
+Each task's `results.json` entry has a `max_new_tokens` block (`initial`, `max_used`,
+`extended`, `truncated`, `looping`). Each prediction records its budget and `truncated: true`
+when it was still cut off. The log warns when answers stayed truncated.
+
+### 7c. Time and memory per benchmark
+
+* The results table on screen and in `report.md` has a **time** column per benchmark, plus a total
+  row and a line with the total run time (model load + benchmarks). `results.json` holds
+  `timing.seconds` (wall time), `load_s` and `inference_s` per task, and `total_s` and
+  `model_load_s` for the run.
+* **GPU memory is released after every benchmark.** Python garbage is collected (failed batches
+  leave reference cycles that keep GPU tensors alive), KV caches kept on the model between calls
+  are dropped, and PyTorch's unused cached blocks go back to the driver. vLLM's prefix and
+  multimodal caches are reset. After an out-of-memory error, the hf backend now retries outside
+  the exception handler, so the failed batch's tensors are freed before the smaller batches run.
+* The log shows the GPU memory in use after each benchmark next to the value after model load,
+  and warns if more than 2 GB stays allocated. `results.json` records it as `gpu_mem_after_gb`.
 
 ## 8a. Executive summary for business readers
 
@@ -370,7 +411,7 @@ results/<model>__<timestamp>/
   config.yaml            fully resolved config (reproducibility)
   env.json               GPU, CUDA, library versions
   predictions/<task>.jsonl   per-sample prompt, raw response, parsed prediction, gold, metrics
-  results.json           all metrics + CIs + breakdowns + timing + peak GPU memory
+  results.json           all metrics + CIs + breakdowns + time per task + GPU memory + token budgets
   summary.csv            one row per task
   report.md              tables, language matrix, per-group breakdowns
   executive_summary.html one-page business summary (indibench summary … --pdf for a PDF)

@@ -86,6 +86,11 @@ class Task:
     type_name = "base"
     default_metrics: List[str] = []
     needs_images_default = False
+    # Output budget when the spec sets no max_new_tokens. Tasks scored against free-text references
+    # (translation, summaries, QA, OCR) also raise it to fit the reference answers, measured with
+    # the model's own tokenizer, because Indic scripts take 3-8x more tokens per word than English.
+    default_max_new_tokens = 256
+    scale_to_reference = False
 
     def __init__(self, spec: Dict[str, Any], run: RunConfig, image_cfg: ImageConfig):
         self.spec = spec
@@ -226,6 +231,27 @@ class Task:
     def gold_text(self, doc: Doc) -> str:
         """Assistant turn used for few-shot demonstrations."""
         return str(doc.gold)
+
+    def token_budget(self, gen) -> int:
+        """Starting max_new_tokens for this task (before reference-length scaling)."""
+        b = int(self.max_new_tokens or self.default_max_new_tokens)
+        if isinstance(gen.max_new_tokens, int) and not isinstance(gen.max_new_tokens, bool):
+            b = max(b, gen.max_new_tokens)          # user value is a floor for every task
+        if gen.enable_thinking:
+            b = max(b, 2048)                         # reasoning traces come before the answer
+        return min(b, int(gen.max_new_tokens_limit))
+
+    def reference_texts(self, docs: List[Doc]) -> List[str]:
+        """Reference answers used to size the output budget (empty = do not scale)."""
+        if not self.scale_to_reference:
+            return []
+        out = []
+        for d in docs:
+            g = d.gold
+            for x in (g if isinstance(g, (list, tuple)) else [g]):
+                if isinstance(x, str) and x.strip():
+                    out.append(x)
+        return out
 
     def build_request(self, doc: Doc, system_prompt: Optional[str] = None) -> Request:
         msgs: List[Dict[str, Any]] = []
@@ -453,6 +479,8 @@ class QATask(Task):
     """Extractive / short-answer QA (optionally with images) against reference strings."""
 
     default_metrics = ["exact_match", "f1", "char_f1"]
+    default_max_new_tokens = 128
+    scale_to_reference = True
 
     def default_template(self) -> str:
         if self.fields.get("context"):
@@ -516,6 +544,8 @@ class GenerationTask(Task):
     """Translation / summarisation / open generation against reference text(s)."""
 
     default_metrics = ["chrf", "bleu", "script_fidelity"]
+    default_max_new_tokens = 512
+    scale_to_reference = True
 
     def default_template(self) -> str:
         if self.spec.get("subtype") == "summarization":
