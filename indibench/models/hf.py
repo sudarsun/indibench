@@ -276,7 +276,7 @@ class HFModel(BaseModel):
         if "pixel_values" in inputs and self.dtype != "auto":
             inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
         max_new = max(int(r.max_new_tokens or 512) for r in batch)
-        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id}
+        kw: Dict[str, Any] = {"max_new_tokens": max_new, "pad_token_id": self.tokenizer.pad_token_id, "max_length": None}
         if gen.temperature and gen.temperature > 0:
             kw.update(do_sample=True, temperature=gen.temperature, top_p=gen.top_p)
             if gen.top_k:
