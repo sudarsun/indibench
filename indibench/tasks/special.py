@@ -6,6 +6,7 @@ import glob
 import logging
 import os
 import random
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -138,7 +139,8 @@ class MathVistaTask(Task):
         atype = doc.meta.get("atype")
         num = extract_number(response)
         if atype == "integer":
-            ok = num is not None and M._to_float(gold) is not None and int(round(num)) == int(float(gold))
+            gf = M._to_float(gold)
+            ok = num is not None and gf is not None and math.isfinite(gf) and round(num) == round(gf)
             return num, {"accuracy": float(ok)}
         if atype == "float":
             prec = int(doc.meta.get("precision") or 2)

@@ -100,9 +100,10 @@ def _relaxed(pred: str, gold: str, lang: str, tol: float = 0.05) -> float:
 
 def _to_float(s: str) -> Optional[float]:
     try:
-        return float(str(s).replace(",", "").replace("%", "").strip())
-    except ValueError:
+        v = float(str(s).replace(",", "").replace("%", "").strip())
+    except (ValueError, OverflowError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def _rouge_l(pred: str, gold: str, lang: str) -> float:

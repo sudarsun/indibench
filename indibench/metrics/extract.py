@@ -1,6 +1,7 @@
 """Answer extraction from free-form generations (MCQ letters, yes/no, numbers)."""
 from __future__ import annotations
 
+import math
 import re
 from typing import List, Optional, Sequence
 
@@ -109,7 +110,10 @@ def extract_number(text: str) -> Optional[float]:
     nums = _NUM_RE.findall(t)
     for n in reversed(nums):
         try:
-            return float(n.replace(",", "").rstrip("."))
-        except ValueError:
+            v = float(n.replace(",", "").rstrip("."))
+        except (ValueError, OverflowError):
             continue
+        # a runaway digit string ("99999…" or "1e999") parses as inf; it is not an answer
+        if math.isfinite(v):
+            return v
     return None

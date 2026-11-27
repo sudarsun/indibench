@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import subprocess
 import sys
@@ -394,8 +395,10 @@ def jee_score(qtype: str, pred: Optional[str], gold: str) -> float:
         return 1.0 if p == g else 0.25 * len(p)
     try:
         pv, gv = float(pred), float(gold)
-    except ValueError:
+    except (ValueError, OverflowError):
         return 0.0
+    if not (math.isfinite(pv) and math.isfinite(gv)):
+        return 0.0                          # "inf"/"nan" answers; round() would raise
     if qtype == "Integer":
         return float(round(pv) == round(gv) and abs(pv - round(pv)) < 1e-6)
     return float(abs(pv - gv) <= 0.01)      # Numeric

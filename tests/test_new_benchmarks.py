@@ -191,3 +191,16 @@ tasks:
                              "run.output_dir": str(tmp_path), "run.run_name": "m"}, ["model.extra.mode=oracle"])
     res = Evaluator(cfg).run()["results"]["local_gsm"]
     assert res["metrics"]["accuracy"]["value"] == 100.0
+
+
+def test_jee_and_number_extraction_survive_infinity():
+    from indibench.metrics.extract import extract_number
+    from indibench.tasks.reasoning import jee_score
+
+    assert extract_number("Final Answer: " + "9" * 400) is None          # parses as inf
+    assert extract_number("x = 12 then 1e999") == 12.0                   # skip inf, keep last finite
+    for q in ("Integer", "Numeric"):
+        assert jee_score(q, "inf", "5") == 0.0
+        assert jee_score(q, "nan", "5") == 0.0
+        assert jee_score(q, "1e999", "5") == 0.0
+    assert jee_score("Integer", "5", "5") == 1.0 and jee_score("Numeric", "0.333", "0.33") == 1.0

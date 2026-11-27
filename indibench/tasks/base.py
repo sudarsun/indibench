@@ -375,7 +375,7 @@ class MultipleChoiceTask(Task):
                     if s.lstrip("-").isdigit():
                         return int(s)
                 return None
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, OverflowError):
             return None
         raise ValueError(f"{self.name}: unknown answer_format {fmt!r}")
 
