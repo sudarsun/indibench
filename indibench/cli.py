@@ -585,7 +585,8 @@ generation:
   strip_thinking: true
 
 run:
-  tasks: [tamil]                # tasks, globs (belebele_*) or groups (tamil, indic_text, vision_core, quick)
+  tasks: [tamil]                # tasks, globs (belebele_*) or groups (tamil, indic_text, vision_core, quick,
+                                #   all, all-text, all-vision)
   languages: null               # e.g. [ta, hi] or [indic] to filter language-expanded tasks
   modalities: null              # [text] for a text-only LLM (skips every vision task); [image]; null = all
   exclude: []                   # drop tasks by name, glob, tag or group, e.g. [vision, "xlsum_*"]

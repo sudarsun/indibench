@@ -208,8 +208,18 @@ Math and JEE tasks expect step-by-step reasoning, so their `max_new_tokens` defa
 * **Indic:** `indic_text`, `indic_vision`, `indic_knowledge`, `indicgenbench`.
 * **English and domains:** `indian_english`, `english_core`, `math`, `science`, `code`, `stem`,
   **`indian_culture`** and **`safety`**.
-* **Other:** `vision_core`, `quick` and `full`. `full` covers everything except predict-only and
-  code tasks.
+* **Other:** `vision_core`, `quick` and `full`. `full` is a curated cross-section that leaves out
+  the predict-only CVQA tasks and the code tasks.
+* **Everything:** `all` runs every task in the catalogue (280, plus any from your `--task-file`).
+  `all-text` runs every task that sends no images (229, for text-only LLMs), and `all-vision` runs
+  every task that does (51). HumanEval and MBPP are part of `all` and `all-text`, but they are
+  skipped, with a note in the report, unless you pass `--allow-code-execution`. They narrow
+  further with `-l ta`, `-x …` and `--limit`.
+
+**Predict-only tasks** are benchmarks whose test answers are not public. CVQA (`cvqa_*`) is the
+only built-in one: its labels are held back for the official leaderboard. indibench still runs the
+model and saves every prediction in `predictions/cvqa_<lang>.jsonl` for you to submit, but it
+reports no score, and these tasks are left out of the executive summary.
 
 Any task tag can also be selected with `-t tag:<tag>`, for example `-t tag:indian_english`,
 `-t tag:medical` or `-t tag:exams`. Combine suites with `--languages ta,hi`, `indic`, `indic_major`,

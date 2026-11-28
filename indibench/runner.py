@@ -164,6 +164,9 @@ class Evaluator:
             except DatasetLoadError as e:
                 log.error("[%s] dataset error: %s", name, e)
                 results[name] = {"error": str(e), "family": spec.get("family"), "lang": spec.get("lang")}
+            except PermissionError as e:      # opt-in tasks, e.g. code execution
+                log.warning("[%s] skipped: %s", name, e)
+                results[name] = {"skipped": str(e), "family": spec.get("family"), "lang": spec.get("lang")}
             except KeyboardInterrupt:
                 log.warning("Interrupted — partial predictions are saved; re-run with the same --run-name to resume")
                 break

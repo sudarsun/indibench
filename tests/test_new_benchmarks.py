@@ -204,3 +204,27 @@ def test_jee_and_number_extraction_survive_infinity():
         assert jee_score(q, "nan", "5") == 0.0
         assert jee_score(q, "1e999", "5") == 0.0
     assert jee_score("Integer", "5", "5") == 1.0 and jee_score("Numeric", "0.333", "0.33") == 1.0
+
+
+def test_all_groups_cover_catalogue():
+    from indibench.tasks.registry import TaskRegistry
+
+    r = TaskRegistry()
+    every, text, vision = r.resolve(["all"]), r.resolve(["all-text"]), r.resolve(["all-vision"])
+    assert set(every) == set(r.specs)
+    assert set(text) | set(vision) == set(every) and not set(text) & set(vision)
+    assert all(r.specs[n]["modality"] == "text" for n in text)
+    assert "humaneval" in text and "cvqa_ta" in vision
+    assert set(r.resolve(["all-text"], languages=["ta"])) <= set(text)
+    assert "mbpp" not in r.resolve(["all-text"], exclude=["code"])
+
+
+def test_code_tasks_skipped_without_opt_in(tmp_path, monkeypatch):
+    from indibench.config import load_config
+    from indibench.runner import Evaluator
+
+    monkeypatch.delenv("INDIBENCH_ALLOW_CODE_EXECUTION", raising=False)
+    cfg = load_config(None, {"model.backend": "dummy", "run.tasks": ["humaneval"], "run.limit": 2,
+                             "run.output_dir": str(tmp_path)}, [])
+    res = Evaluator(cfg).run()["results"]["humaneval"]
+    assert "skipped" in res and "allow-code-execution" in res["skipped"]

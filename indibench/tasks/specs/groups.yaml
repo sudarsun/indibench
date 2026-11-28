@@ -75,7 +75,22 @@ groups:
     tasks: [truthfulqa_mc1, pope, ifeval, "offensive_codemix_*"]
 
   full:
-    description: Everything except predict-only and code-execution tasks.
+    description: Curated cross-section of every area; leaves out predict-only (CVQA) and code-execution tasks.
     tasks: [indic_text, indic_vision, vision_core, mmlu_en, xlsum_ta, flores_ta-en,
             indic_knowledge, indicgenbench, indian_english, english_core, math, science,
             indian_culture, safety]
+
+  # ---------------------------------------------------------------- everything
+  # "*" matches every task the registry knows, including tasks from your own --task-file.
+  # Code-execution tasks (humaneval, mbpp) are skipped unless --allow-code-execution is given.
+  all:
+    description: Every benchmark, text and vision (code tasks need --allow-code-execution).
+    tasks: ["*"]
+  all-text:
+    description: Every benchmark that sends no images to the model (for text-only LLMs).
+    tasks: ["*"]
+    modality: text
+  all-vision:
+    description: Every benchmark that sends images to the model.
+    tasks: ["*"]
+    modality: image

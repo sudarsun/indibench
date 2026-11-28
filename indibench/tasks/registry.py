@@ -40,6 +40,8 @@ class TaskRegistry:
         self.specs: Dict[str, Dict[str, Any]] = {}
         self.groups: Dict[str, List[str]] = {}
         self.group_desc: Dict[str, str] = {}
+        # optional per-group filters: {"modality": "text"|"image", "exclude": [...]}
+        self.group_filters: Dict[str, Dict[str, Any]] = {}
         files = sorted(glob.glob(os.path.join(SPEC_DIR, "*.yaml")))
         for f in files + list(extra_files or []):
             self.load_file(f)
@@ -58,6 +60,9 @@ class TaskRegistry:
             if isinstance(g, dict):
                 self.groups[gname] = list(g.get("tasks", []))
                 self.group_desc[gname] = g.get("description", "")
+                filt = {k: g[k] for k in ("modality", "exclude") if g.get(k)}
+                if filt:
+                    self.group_filters[gname] = filt
             else:
                 self.groups[gname] = list(g)
 
@@ -79,7 +84,12 @@ class TaskRegistry:
                 if p in seen:
                     continue
                 seen.add(p)
-                out.extend(self.resolve(self.groups[p], languages, seen))
+                filt = self.group_filters.get(p, {})
+                mod = filt.get("modality")
+                excl = filt.get("exclude")
+                out.extend(self.resolve(self.groups[p], languages, seen,
+                                        modalities=[mod] if isinstance(mod, str) else mod,
+                                        exclude=[excl] if isinstance(excl, str) else excl))
                 continue
             if p.startswith("tag:"):           # tag:math, tag:indian_english ...
                 tag = p[4:]
